@@ -1,4 +1,4 @@
-# Loyalyn 6.0.0 Release Notes
+# Loyalyn 6.0.1 Release Notes
 
 ## Focused single-brand interface
 
@@ -37,6 +37,13 @@
 
 ## Migration
 
-- Added Alembic revision `0005_single_brand_studio`.
+- Added Alembic revision `0006_single_brand_studio`.
 - Existing customers, stamps, transactions, Wallet credentials and old card assignments are preserved.
 - The migration removes the historical single-customer-card uniqueness and adds compound assignment/pass constraints.
+
+## 6.0.1 migration-chain hotfix
+
+- Restores the previously deployed `0005_stamp_customization` Alembic revision.
+- Moves the single-brand studio migration to `0006_single_brand_studio` and chains it after `0005_stamp_customization`.
+- Prevents API restart loops when upgrading an existing v5.1 database.
+- Deployment now runs Alembic as an explicit pre-start step so migration errors are visible before API startup.

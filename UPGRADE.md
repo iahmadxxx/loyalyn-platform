@@ -1,4 +1,4 @@
-# Upgrade Loyalyn to 6.0.0
+# Upgrade Loyalyn to 6.0.1
 
 Version 6 preserves the PostgreSQL volume, brands, customers, stamp balances, operations, employees, permissions, Wallet credentials and issued-pass history. It adds multi-card customer assignments, per-card Wallet passes and exact stamp presentation settings.
 
@@ -20,13 +20,13 @@ sudo ./deploy/upgrade.sh
 Expected version:
 
 ```text
-6.0.0
+6.0.1
 ```
 
 Expected Alembic head:
 
 ```text
-0005_single_brand_studio
+0006_single_brand_studio
 ```
 
 The upgrade script creates source and PostgreSQL backups under `/opt/loyalyn-backups`, rebuilds API/worker/web and starts services without deleting named volumes.

@@ -1,4 +1,4 @@
-# Loyalyn 6.0.0 — Single-Brand Stamp Studio
+# Loyalyn 6.0.1 — Single-Brand Stamp Studio
 
 Loyalyn V6 is a focused Apple Wallet stamp-card system for one brand. The administration experience is intentionally small and direct: design cards, register customers, assign one or several cards, scan, and review operations.
 
@@ -91,6 +91,6 @@ Existing installation:
 sudo ./deploy/upgrade.sh
 ```
 
-The script takes source and PostgreSQL backups, widens Alembic revision storage when needed, rebuilds the services and applies migration `0005_single_brand_studio` without deleting named volumes.
+The script takes source and PostgreSQL backups, widens Alembic revision storage when needed, rebuilds the services and applies migration `0006_single_brand_studio` without deleting named volumes.
 
 Never run `docker compose down -v` in production.

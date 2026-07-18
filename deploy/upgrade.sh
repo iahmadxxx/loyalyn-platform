@@ -36,10 +36,13 @@ SQL
 echo "[5/8] Building containers"
 docker compose build --pull
 
-echo "[6/8] Starting services and applying Alembic migrations"
-docker compose up -d --remove-orphans
+echo "[6/8] Applying Alembic migrations before API startup"
+docker compose stop api worker web >/dev/null 2>&1 || true
+docker compose up -d db
+docker compose run --rm --no-deps api alembic upgrade head
 
-echo "[7/8] Waiting for health checks"
+echo "[7/8] Starting services and waiting for health checks"
+docker compose up -d --remove-orphans
 "$PROJECT_DIR/deploy/healthcheck.sh"
 
 echo "[8/8] Upgrade complete"

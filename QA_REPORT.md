@@ -1,4 +1,4 @@
-# Loyalyn 6.0.0 QA Report
+# Loyalyn 6.0.1 QA Report
 
 ## Backend unit tests
 
@@ -50,7 +50,7 @@ Legacy SQLite migration QA successfully upgraded through:
 0002_program_profiles_stamp_experience
 0003_security_sessions
 0004_card_templates
-0005_single_brand_studio
+0006_single_brand_studio
 ```
 
 ## Frontend
@@ -64,10 +64,18 @@ npm run build
 - TypeScript validation passed.
 - Next.js 15.4.10 production build passed.
 - Generated routes include `/admin`, `/join/[slug]`, `/card/[token]`, `/employee` and `/login`.
-- OpenAPI reports version `6.0.0` with **84 paths**.
+- OpenAPI reports version `6.0.1` with **84 paths**.
 
 ## Browser and Apple acceptance
 
 The current execution environment blocks Chromium from navigating to localhost with `ERR_BLOCKED_BY_ADMINISTRATOR`, so a real interactive browser screenshot run could not be completed here. The successful production build does not replace final device acceptance.
 
 A real Apple Pass Type certificate, matching WWDR certificate and physical iPhone are required to verify installation and production APNs updates. No private Apple credential is included in the archive.
+
+## v6.0.1 hotfix validation
+
+- Backend unit tests: 19 passed.
+- Alembic legacy-upgrade simulation: `0005_stamp_customization` -> `0006_single_brand_studio` passed.
+- Verified both `settings` and `display_options` columns after upgrade.
+- Frontend TypeScript check passed.
+- Next.js production build passed.

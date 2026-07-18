@@ -63,4 +63,4 @@ The simplified navigation is not the security boundary. Every API still enforces
 
 ## Upgrade safety
 
-Migration `0005_single_brand_studio` adds display options and active assignments, removes the old one-card uniqueness and creates compound uniqueness for customer-card assignments and Wallet passes. Historical records and named Docker volumes are retained.
+Migration `0006_single_brand_studio` adds display options and active assignments, removes the old one-card uniqueness and creates compound uniqueness for customer-card assignments and Wallet passes. Historical records and named Docker volumes are retained.
