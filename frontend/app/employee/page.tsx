@@ -1,0 +1,2 @@
+import Link from 'next/link'
+export default function Employee(){return <main className="min-h-screen grid-bg grid place-items-center p-5"><div className="glass card max-w-lg text-center"><h1 className="text-3xl font-black">واجهة الموظف</h1><p className="text-white/50 mt-4">تم دمج المسح السريع وتحديث النقاط داخل لوحة العملاء لضمان الصلاحيات وسجل العمليات.</p><Link href="/admin" className="btn-primary mt-6">فتح لوحة Loyalyn</Link></div></main>}
