@@ -21,6 +21,8 @@ services:
       db:
         condition: service_healthy
     ports: ["127.0.0.1:8000:8000"]
+    volumes:
+      - loyalyn_data:/app/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 15s
@@ -39,3 +41,4 @@ services:
     ports: ["127.0.0.1:3000:3000"]
 volumes:
   postgres_data:
+  loyalyn_data:
