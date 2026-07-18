@@ -1,7 +1,8 @@
 FROM node:20-bookworm-slim AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+COPY package.json package-lock.json .npmrc ./
+RUN npm config set registry https://registry.npmjs.org/ \
+    && npm ci --registry=https://registry.npmjs.org/ --no-audit --no-fund
 FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 ARG NEXT_PUBLIC_API_URL

@@ -33,3 +33,10 @@
 - Per-brand deactivation does not disable access to a different active brand.
 - Central Wallet routes are denied to brand managers.
 - Audit JSON values are normalized safely.
+
+## 3.0.1
+
+- Removed private/internal npm artifact URLs from `frontend/package-lock.json`.
+- Forced Docker frontend builds to use the public npm registry.
+- Added a project-level `.npmrc` for reproducible production builds.
+- Fixes `ECONNREFUSED` while downloading Next.js during VPS deployment.
