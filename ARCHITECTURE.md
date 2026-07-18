@@ -77,3 +77,16 @@ Employee brand access + assigned branch
 - Certificate passwords are encrypted and never returned by the API.
 - Brand managers never receive or download the central Apple certificate.
 - Browser bearer credentials are unavailable to JavaScript because they are HttpOnly.
+
+## V5 card-template layer
+
+The V5 card experience is normalized into four records:
+
+- `card_templates`: draft/published card identity, design and lifecycle per brand;
+- `card_template_programs`: ordered visible stamp programs inside a template;
+- `customer_card_assignments`: one active main template per customer;
+- `stamp_transactions`: immutable operations with reversal links and before/after state.
+
+Public registration reads only published snapshots. Managers edit draft columns and explicitly publish. Wallet generation and customer public pages consume the published snapshot, which prevents partial design/program changes from leaking before publication.
+
+A reversal never deletes or edits history. The original transaction is marked with a reversal link and a compensating transaction restores the exact previous card state. Tenant, branch, permission and template-program scope are all enforced by the API.

@@ -1,75 +1,72 @@
-# Loyalyn 4.1.0
+# Loyalyn 5.0.0
 
-Loyalyn is a multi-brand loyalty operating system built with FastAPI, PostgreSQL, Next.js and Docker Compose. Version 4.1 preserves the full V4 feature set and adds a hardened browser session model, reliable permission-aware screens, branch-scoped employee operations and a fully responsive Arabic mobile interface.
+Loyalyn is a multi-brand loyalty operating system built with FastAPI, PostgreSQL, Next.js and Docker Compose. Version 5 adds a complete card-template layer: one customer Wallet card can contain several independent stamp programs, while each brand can publish multiple card combinations such as Coffee only, Coffee + Sweet, Breakfast or VIP.
 
-## One platform, different brand programs
+## Card templates
 
-The platform owner chooses the appropriate profile for every brand:
+Each brand can create any number of card templates. A template controls:
 
-- **Stamps only**: multiple independent stamp cards, fast scan, rewards, Wallet and campaigns.
-- **Points only**: points, tiers, catalog rewards, coupons, Wallet and campaigns.
-- **Stamps + points**: both systems together.
-- **Full loyalty**: stamps, points, cashback, tiers, rewards, coupons, Wallet and campaigns.
-- **Custom**: individual feature switches.
+- Arabic and English names, description, status and public-registration visibility;
+- the ordered stamp programs included in that card;
+- colors, logo, hero/strip/background artwork, barcode format and text fields;
+- draft and published versions so unfinished changes never leak to customers;
+- duplicate, publish, unpublish, archive, restore and safe-delete actions.
 
-Changing a profile never deletes customers, balances, cards, rewards or transaction history. Disabled features are hidden in the interface and rejected by the API until re-enabled.
+Existing brands receive a compatible default published template automatically. Existing customers and stamp balances are preserved.
 
-## Stamp-first experience
+## Multiple stamp programs in one card
 
-- Create Coffee, Sweet, Breakfast or any other independent stamp card inside one brand.
-- Set each card's target, reward, colors, icon, full artwork and empty/filled stamp images.
-- Scan a membership QR, select the purchased product card and add one stamp in a few taps.
-- Redeem one card's reward without affecting another card.
-- Use idempotency keys and an auditable transaction ledger to prevent duplicate operations.
+A single customer card can display independent progress for Coffee, Sweet, Breakfast or any custom label. Each program has its own target, reward, icon, colors, branch rules and transaction history. The first programs appear on the Wallet face and all programs remain available in the customer card details.
 
-## Reliable mobile administration
+## Customer assignment and public join
 
-- Fixed mobile header with quick access to the scan screen.
-- Slide-out navigation, touch targets of at least 44px and form fields sized for iPhone and Android keyboards.
-- Single-column responsive forms, mobile bottom-sheet dialogs and horizontally safe tables.
-- Wallet Studio, customer management, stamp cards and employee scan have dedicated mobile layouts.
-- A section-level error boundary prevents one screen from crashing the whole administration app.
+- Every customer has one active main card assignment per brand.
+- The manager can change the customer's card template without creating a duplicate customer.
+- The public brand QR shows only published templates that allow public registration.
+- The customer selects a card, registers, receives a stable membership QR and—when Apple signing is ready—an Add to Apple Wallet action.
 
-## Employee permissions and privacy
+## Fast Scan and safe reversal
 
-- Every user receives effective permissions from the role defaults plus explicit per-brand overrides; unchecked permissions are stored as explicit revocations.
-- A branch-scoped employee is forced to the assigned branch by the backend.
-- Employees search customers by phone, name or membership code instead of downloading the full customer list by default.
-- Privacy-limited employee search omits email, birthday, notes, tags and total spending unless broader permissions are granted.
-- Navigation and action buttons follow effective permissions, while the API independently enforces every sensitive operation and prevents delegated managers from granting permissions they do not possess.
+The employee scans the membership QR, sees only the programs included in that customer's selected card and adds the relevant Coffee/Sweet/etc. stamp. Every operation records before/after values, employee, branch and time.
 
-## Secure browser sessions
+A mistaken operation is reversed safely:
 
-- Short-lived access tokens and rotating refresh tokens.
-- Access and refresh tokens are stored in Secure HttpOnly cookies, not `localStorage`.
-- CSRF validation for unsafe cookie-authenticated requests.
-- Server-side session records allow logout and revocation to invalidate captured access tokens.
-- Security headers include HSTS in production, CSP, frame denial, content-type protection, referrer policy and a restricted permissions policy.
+- the original audit row is retained;
+- a compensating reversal row is created;
+- only the latest unreversed operation for that program can be reversed;
+- the exact previous balance is restored;
+- unauthorized or cross-template stamping is rejected by the API.
 
-Existing users will be asked to sign in once after upgrading from the previous localStorage-based session.
+## Full administration lifecycle
 
-## Apple Wallet ownership model
+Card templates and stamp programs support create, edit, reorder, publish, disable, archive, restore and safe deletion. Records already used by customers are archived rather than destructively removed.
 
-Only the platform owner can upload and manage the central Apple Wallet credential. Brand managers can design, publish and issue cards but cannot view, download or replace the certificate or password. New brands use the active central signer automatically.
+The existing Points only, Stamps only, Stamps + Points, Full Loyalty and Custom brand profiles remain available. Feature switches hide and reject disabled capabilities without deleting historical records.
 
-Apple Wallet limits free-form layout. Loyalyn supports the safe fields Apple permits: colors, logos, hero/strip/background artwork, visible fields, barcode and program data, with a live responsive preview.
+## Mobile administration
 
-## Local verification
+The Arabic RTL interface includes a mobile header, slide-out navigation, bottom quick navigation, single-column forms, touch-friendly controls, responsive card previews and a simplified Fast Scan flow. TypeScript and the production Next.js build are part of the release checks.
+
+## Apple Wallet ownership
+
+Only the platform owner manages the central Apple certificate. Brand managers create and publish card designs but cannot read or download the certificate or password. A production Pass Type certificate, matching WWDR certificate and a physical iPhone are required for final live installation/APNs acceptance.
+
+## Verification
 
 ```bash
 PYTHONPATH=backend pytest -q backend/tests
 PYTHONPATH=backend python scripts/qa_smoke.py
 PYTHONPATH=backend python scripts/qa_stamp_experience.py
-PYTHONPATH=backend python scripts/qa_legacy_migration.py
+PYTHONPATH=backend python scripts/qa_public_wallet_join.py
 PYTHONPATH=backend python scripts/qa_security_sessions.py
+PYTHONPATH=backend python scripts/qa_legacy_migration.py
+PYTHONPATH=backend python scripts/qa_card_templates.py
 
 cd frontend
 npm ci
 npm run lint
 NEXT_PUBLIC_API_URL=https://api.loyalyn.site npm run build
 ```
-
-The Python QA scripts use isolated SQLite databases under `/tmp` and never touch production data.
 
 ## Deployment
 
@@ -88,4 +85,4 @@ Existing installation:
 sudo ./deploy/upgrade.sh
 ```
 
-The upgrade script creates source and PostgreSQL backups before rebuilding. Never run `docker compose down -v` in production because it deletes named volumes.
+The upgrade script creates PostgreSQL and source backups, widens Alembic revision storage when required, applies migrations and rebuilds the services without deleting named volumes. Never run `docker compose down -v` in production.

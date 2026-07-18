@@ -13,11 +13,12 @@ from app.api.deps import brand_access, current_user, operational_branch
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models import (
-    Brand, Branch, Customer, CustomerStampCard, StampProgram, StampTransaction, WalletPass,
+    Brand, Branch, CardTemplate, CardTemplateProgram, Customer, CustomerStampCard, StampProgram, StampTransaction, WalletPass,
 )
-from app.schemas.common import StampAction, StampProgramCreate, StampProgramUpdate, StampRedeem
+from app.schemas.common import StampAction, StampProgramCreate, StampProgramUpdate, StampRedeem, StampTransactionReverse
 from app.services.audit import add_audit
 from app.services.capabilities import brand_capabilities
+from app.services.cards import customer_template_cards
 from app.services.wallet import push_pass_update
 
 router = APIRouter()
@@ -35,7 +36,8 @@ def program_out(program: StampProgram) -> dict:
         "empty_stamp_image_url": program.empty_stamp_image_url,
         "filled_stamp_image_url": program.filled_stamp_image_url,
         "is_default": program.is_default, "sort_order": program.sort_order,
-        "is_active": program.is_active, "created_at": program.created_at, "updated_at": program.updated_at,
+        "is_active": program.is_active, "is_archived": program.is_archived, "archived_at": program.archived_at,
+        "created_at": program.created_at, "updated_at": program.updated_at,
     }
 
 
@@ -68,33 +70,8 @@ async def ensure_branch(db: AsyncSession, branch_id: uuid.UUID | None, brand_id:
 
 
 async def ensure_customer_cards(db: AsyncSession, customer: Customer) -> list[tuple[CustomerStampCard, StampProgram]]:
-    programs = list((await db.scalars(
-        select(StampProgram).where(StampProgram.brand_id == customer.brand_id, StampProgram.is_active.is_(True))
-        .order_by(StampProgram.sort_order, StampProgram.created_at)
-    )).all())
-    existing = {x.stamp_program_id: x for x in (await db.scalars(
-        select(CustomerStampCard).where(CustomerStampCard.customer_id == customer.id)
-    )).all()}
-    had_any = bool(existing)
-    result: list[tuple[CustomerStampCard, StampProgram]] = []
-    default_consumed = False
-    for program in programs:
-        card = existing.get(program.id)
-        if not card:
-            migrate_legacy = not had_any and not default_consumed and (program.is_default or program == programs[0])
-            card = CustomerStampCard(
-                brand_id=customer.brand_id, customer_id=customer.id, stamp_program_id=program.id,
-                stamps=customer.stamps if migrate_legacy else 0,
-                rewards_available=customer.available_rewards if migrate_legacy else 0,
-                lifetime_stamps=customer.stamps if migrate_legacy else 0,
-                is_active=True,
-            )
-            db.add(card)
-            await db.flush()
-            if migrate_legacy:
-                default_consumed = True
-        result.append((card, program))
-    return result
+    _, rows = await customer_template_cards(db, customer)
+    return rows
 
 
 async def sync_customer_totals(db: AsyncSession, customer: Customer) -> None:
@@ -121,7 +98,7 @@ async def list_programs(brand_id: uuid.UUID, active_only: bool = False, db: Asyn
     await require_stamps(db, brand_id)
     query = select(StampProgram).where(StampProgram.brand_id == brand_id)
     if active_only:
-        query = query.where(StampProgram.is_active.is_(True))
+        query = query.where(StampProgram.is_active.is_(True), StampProgram.is_archived.is_(False))
     rows = list((await db.scalars(query.order_by(StampProgram.sort_order, StampProgram.created_at))).all())
     return [program_out(x) for x in rows]
 
@@ -138,6 +115,30 @@ async def create_program(payload: StampProgramCreate, request: Request, db: Asyn
     program = StampProgram(**payload.model_dump())
     db.add(program)
     await db.flush()
+    # Backward-compatible behavior: the default card represents the brand's
+    # main card, so newly created stamp programs are added to it automatically.
+    # Other card templates remain explicit and are not changed.
+    default_template = await db.scalar(select(CardTemplate).where(
+        CardTemplate.brand_id == payload.brand_id,
+        CardTemplate.is_default.is_(True),
+        CardTemplate.status != "archived",
+    ).order_by(CardTemplate.created_at))
+    if default_template:
+        linked = await db.scalar(select(CardTemplateProgram).where(
+            CardTemplateProgram.card_template_id == default_template.id,
+            CardTemplateProgram.stamp_program_id == program.id,
+        ))
+        if not linked:
+            max_order = await db.scalar(select(func.max(CardTemplateProgram.sort_order)).where(
+                CardTemplateProgram.card_template_id == default_template.id
+            ))
+            db.add(CardTemplateProgram(
+                card_template_id=default_template.id,
+                stamp_program_id=program.id,
+                sort_order=int(max_order or -1) + 1,
+                is_visible=True,
+            ))
+            default_template.draft_version += 1
     add_audit(db, actor_id=user.id, action="stamp_program_created", entity_type="stamp_program", entity_id=program.id, brand_id=payload.brand_id, details={"name": program.name, "slug": program.slug}, ip_address=request.client.host if request.client else None)
     await db.commit()
     await db.refresh(program)
@@ -165,6 +166,50 @@ async def update_program(program_id: uuid.UUID, payload: StampProgramUpdate, req
     await db.commit()
     await db.refresh(program)
     return program_out(program)
+
+
+@router.post("/programs/{program_id}/archive")
+async def archive_program(program_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    program = await db.get(StampProgram, program_id)
+    if not program:
+        raise HTTPException(404, "برنامج الختم غير موجود")
+    await brand_access(db, user, program.brand_id, permission="loyalty.manage")
+    program.is_active = False
+    program.is_archived = True
+    program.archived_at = datetime.now(timezone.utc)
+    add_audit(db, actor_id=user.id, action="stamp_program_archived", entity_type="stamp_program", entity_id=program.id, brand_id=program.brand_id, details={"name": program.name}, ip_address=request.client.host if request.client else None)
+    await db.commit()
+    return program_out(program)
+
+
+@router.post("/programs/{program_id}/restore")
+async def restore_program(program_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    program = await db.get(StampProgram, program_id)
+    if not program:
+        raise HTTPException(404, "برنامج الختم غير موجود")
+    await brand_access(db, user, program.brand_id, permission="loyalty.manage")
+    program.is_archived = False
+    program.archived_at = None
+    program.is_active = True
+    add_audit(db, actor_id=user.id, action="stamp_program_restored", entity_type="stamp_program", entity_id=program.id, brand_id=program.brand_id, details={"name": program.name}, ip_address=request.client.host if request.client else None)
+    await db.commit()
+    return program_out(program)
+
+
+@router.delete("/programs/{program_id}", status_code=204)
+async def delete_program(program_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    program = await db.get(StampProgram, program_id)
+    if not program:
+        raise HTTPException(404, "برنامج الختم غير موجود")
+    await brand_access(db, user, program.brand_id, permission="loyalty.manage")
+    linked = int(await db.scalar(select(func.count()).select_from(CardTemplateProgram).where(CardTemplateProgram.stamp_program_id == program.id)) or 0)
+    cards = int(await db.scalar(select(func.count()).select_from(CustomerStampCard).where(CustomerStampCard.stamp_program_id == program.id)) or 0)
+    transactions = int(await db.scalar(select(func.count()).select_from(StampTransaction).where(StampTransaction.stamp_program_id == program.id)) or 0)
+    if linked or cards or transactions:
+        raise HTTPException(409, "برنامج الختم مستخدم؛ استخدم الأرشفة بدل الحذف النهائي")
+    await db.delete(program)
+    add_audit(db, actor_id=user.id, action="stamp_program_deleted", entity_type="stamp_program", entity_id=program.id, brand_id=program.brand_id, details={"name": program.name}, ip_address=request.client.host if request.client else None)
+    await db.commit()
 
 
 @router.post("/programs/{program_id}/asset")
@@ -239,11 +284,12 @@ async def scan_customer(membership_code: str, brand_id: uuid.UUID | None = None,
         raise HTTPException(404, "لم يتم العثور على العميل من الرمز الممسوح")
     await brand_access(db, user, customer.brand_id, permission="loyalty.apply")
     brand = await require_stamps(db, customer.brand_id)
-    cards = await ensure_customer_cards(db, customer)
+    template, cards = await customer_template_cards(db, customer)
     await db.commit()
     return {
         "brand": {"id": str(brand.id), "name": brand.name, "slug": brand.slug},
         "customer": {"id": str(customer.id), "name": customer.name, "phone": customer.phone, "membership_code": customer.membership_code, "last_visit_at": customer.last_visit_at},
+        "card_template": {"id": str(template.id), "name": template.name, "slug": template.slug},
         "cards": [card_out(card, program) for card, program in cards],
     }
 
@@ -265,6 +311,8 @@ async def add_stamps(customer_id: uuid.UUID, program_id: uuid.UUID, payload: Sta
     await ensure_branch(db, branch_id, customer.brand_id)
     await ensure_customer_cards(db, customer)
     card = await db.scalar(select(CustomerStampCard).where(CustomerStampCard.customer_id == customer.id, CustomerStampCard.stamp_program_id == program.id).with_for_update())
+    if not card or not card.is_active or program.is_archived:
+        raise HTTPException(409, "برنامج الختم غير موجود داخل بطاقة هذا العميل")
     before = card.stamps
     rewards_before = card.rewards_available
     raw_total = card.stamps + payload.quantity
@@ -290,8 +338,8 @@ async def add_stamps(customer_id: uuid.UUID, program_id: uuid.UUID, payload: Sta
     if wallet_pass:
         await push_pass_update(db, wallet_pass)
         await db.commit()
-    cards = await ensure_customer_cards(db, customer)
-    return {"duplicate": False, "earned_rewards": earned, "customer": {"id": str(customer.id), "name": customer.name, "membership_code": customer.membership_code}, "cards": [card_out(c, p) for c, p in cards]}
+    template, cards = await customer_template_cards(db, customer)
+    return {"duplicate": False, "earned_rewards": earned, "customer": {"id": str(customer.id), "name": customer.name, "membership_code": customer.membership_code}, "card_template": {"id": str(template.id), "name": template.name}, "cards": [card_out(c, p) for c, p in cards]}
 
 
 @router.post("/customers/{customer_id}/programs/{program_id}/redeem")
@@ -327,5 +375,116 @@ async def redeem_stamp_reward(customer_id: uuid.UUID, program_id: uuid.UUID, pay
     if wallet_pass:
         await push_pass_update(db, wallet_pass)
         await db.commit()
-    cards = await ensure_customer_cards(db, customer)
-    return {"duplicate": False, "reward_title": program.reward_title, "cards": [card_out(c, p) for c, p in cards]}
+    template, cards = await customer_template_cards(db, customer)
+    return {"duplicate": False, "reward_title": program.reward_title, "card_template": {"id": str(template.id), "name": template.name}, "cards": [card_out(c, p) for c, p in cards]}
+
+
+def transaction_out(tx: StampTransaction) -> dict:
+    return {
+        "id": str(tx.id), "brand_id": str(tx.brand_id), "branch_id": str(tx.branch_id) if tx.branch_id else None,
+        "customer_id": str(tx.customer_id), "stamp_program_id": str(tx.stamp_program_id),
+        "actor_id": str(tx.actor_id) if tx.actor_id else None, "action": tx.action,
+        "delta_stamps": tx.delta_stamps, "stamps_before": tx.stamps_before, "stamps_after": tx.stamps_after,
+        "delta_rewards": tx.delta_rewards, "rewards_before": tx.rewards_before, "rewards_after": tx.rewards_after,
+        "reference": tx.reference, "note": tx.note, "created_at": tx.created_at,
+        "reversed_at": tx.reversed_at, "reversal_reason": tx.reversal_reason,
+        "original_transaction_id": str(tx.original_transaction_id) if tx.original_transaction_id else None,
+        "reversal_transaction_id": str(tx.reversal_transaction_id) if tx.reversal_transaction_id else None,
+    }
+
+
+@router.get("/transactions")
+async def list_stamp_transactions(brand_id: uuid.UUID, customer_id: uuid.UUID | None = None, limit: int = 100, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    await brand_access(db, user, brand_id, permission="loyalty.apply" if customer_id else "loyalty.view")
+    query = select(StampTransaction).where(StampTransaction.brand_id == brand_id)
+    if customer_id:
+        query = query.where(StampTransaction.customer_id == customer_id)
+    rows = list((await db.scalars(query.order_by(StampTransaction.created_at.desc()).limit(min(max(limit, 1), 300)))).all())
+    return [transaction_out(row) for row in rows]
+
+
+@router.post("/transactions/{transaction_id}/reverse")
+async def reverse_stamp_transaction(transaction_id: uuid.UUID, payload: StampTransactionReverse, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    duplicate = await db.scalar(select(StampTransaction).where(StampTransaction.idempotency_key == payload.idempotency_key))
+    if duplicate:
+        return {"duplicate": True, "transaction": transaction_out(duplicate)}
+    original = await db.scalar(select(StampTransaction).where(StampTransaction.id == transaction_id).with_for_update())
+    if not original:
+        raise HTTPException(404, "عملية الختم غير موجودة")
+    await brand_access(db, user, original.brand_id, permission="loyalty.reverse")
+    if original.action == "reversal" or original.original_transaction_id:
+        raise HTTPException(409, "لا يمكن عكس عملية تراجع")
+    if original.reversed_at or original.reversal_transaction_id:
+        raise HTTPException(409, "تم التراجع عن هذه العملية مسبقًا")
+    customer = await db.scalar(select(Customer).where(Customer.id == original.customer_id).with_for_update())
+    program = await db.get(StampProgram, original.stamp_program_id)
+    card = await db.scalar(select(CustomerStampCard).where(
+        CustomerStampCard.customer_id == original.customer_id,
+        CustomerStampCard.stamp_program_id == original.stamp_program_id,
+    ).with_for_update())
+    if not customer or not program or not card:
+        raise HTTPException(409, "تعذر استرجاع حالة البطاقة لهذه العملية")
+    latest = await db.scalar(
+        select(StampTransaction).where(
+            StampTransaction.customer_id == original.customer_id,
+            StampTransaction.stamp_program_id == original.stamp_program_id,
+            StampTransaction.action != "reversal",
+            StampTransaction.reversed_at.is_(None),
+        ).order_by(StampTransaction.created_at.desc(), StampTransaction.id.desc()).limit(1)
+    )
+    if not latest or latest.id != original.id:
+        raise HTTPException(409, "يمكن التراجع عن آخر عملية فقط حتى يبقى سجل الأختام صحيحًا")
+    stamps_before = card.stamps
+    rewards_before = card.rewards_available
+    if card.stamps != original.stamps_after or card.rewards_available != original.rewards_after:
+        raise HTTPException(409, "تغير رصيد البطاقة بعد العملية؛ حدّث الصفحة وتراجع عن آخر عملية أولًا")
+    if original.action == "add":
+        card.stamps = original.stamps_before
+        card.rewards_available = original.rewards_before
+        card.lifetime_stamps = max(0, card.lifetime_stamps - max(0, original.delta_stamps))
+        customer.visits = max(0, customer.visits - 1)
+        previous_add = await db.scalar(
+            select(StampTransaction).where(
+                StampTransaction.customer_id == original.customer_id,
+                StampTransaction.stamp_program_id == original.stamp_program_id,
+                StampTransaction.action == "add",
+                StampTransaction.id != original.id,
+                StampTransaction.reversed_at.is_(None),
+            ).order_by(StampTransaction.created_at.desc()).limit(1)
+        )
+        card.last_stamp_at = previous_add.created_at if previous_add else None
+    elif original.action == "redeem":
+        card.stamps = original.stamps_before
+        card.rewards_available = original.rewards_before
+    else:
+        raise HTTPException(409, "نوع العملية لا يدعم التراجع")
+    await sync_customer_totals(db, customer)
+    active_last_dates = list((await db.scalars(
+        select(CustomerStampCard.last_stamp_at).where(
+            CustomerStampCard.customer_id == customer.id,
+            CustomerStampCard.is_active.is_(True),
+            CustomerStampCard.last_stamp_at.is_not(None),
+        )
+    )).all())
+    customer.last_visit_at = max(active_last_dates) if active_last_dates else None
+    reversal = StampTransaction(
+        brand_id=original.brand_id, branch_id=original.branch_id, customer_id=original.customer_id,
+        stamp_program_id=original.stamp_program_id, actor_id=user.id, action="reversal",
+        delta_stamps=card.stamps - stamps_before, stamps_before=stamps_before, stamps_after=card.stamps,
+        delta_rewards=card.rewards_available - rewards_before, rewards_before=rewards_before, rewards_after=card.rewards_available,
+        idempotency_key=payload.idempotency_key, note=payload.reason, original_transaction_id=original.id,
+    )
+    db.add(reversal)
+    await db.flush()
+    original.reversed_at = datetime.now(timezone.utc)
+    original.reversed_by_actor_id = user.id
+    original.reversal_reason = payload.reason
+    original.reversal_transaction_id = reversal.id
+    wallet_pass = await mark_wallet_update(db, customer.id)
+    add_audit(db, actor_id=user.id, action="stamp_transaction_reversed", entity_type="stamp_transaction", entity_id=original.id, brand_id=original.brand_id, details={"reversal_id": str(reversal.id), "reason": payload.reason}, ip_address=request.client.host if request.client else None)
+    await db.commit()
+    if wallet_pass:
+        await push_pass_update(db, wallet_pass)
+        await db.commit()
+    template, cards = await customer_template_cards(db, customer)
+    return {"duplicate": False, "transaction": transaction_out(reversal), "card_template": {"id": str(template.id), "name": template.name}, "cards": [card_out(c, p) for c, p in cards]}

@@ -1,55 +1,51 @@
-# Loyalyn 4.1.0 QA Report
+# Loyalyn 5.0.0 QA Report
 
-## Backend unit and cryptographic tests
+## Backend unit tests
 
 ```bash
 PYTHONPATH=backend pytest -q backend/tests
 ```
 
-Release result: **15 passed**.
+Result: **19 passed**.
 
-Coverage includes program profiles, points/stamps/cashback rules, caps and time windows, encryption, Apple certificate/key validation and signed `.pkpass` manifest/signature generation.
-
-## Existing-platform API smoke test
+## V5 card-template workflow
 
 ```bash
-PYTHONPATH=backend python scripts/qa_smoke.py
-```
-
-Result: passed with two isolated brands, multi-brand manager access, audit records, tenant isolation, central-Wallet restriction, branch enforcement, employee customer privacy and campaign audience isolation.
-
-## Stamp-experience end-to-end test
-
-```bash
-PYTHONPATH=backend python scripts/qa_stamp_experience.py
-```
-
-Verified independent Coffee and Sweet balances/rewards, stable public registration QR, self-enrollment, selected-card stamp issue and redemption, duplicate-action protection, server-side feature gates and preservation of stamp history after changing the brand profile.
-
-## Secure-session test
-
-```bash
-PYTHONPATH=backend python scripts/qa_security_sessions.py
+PYTHONPATH=backend python scripts/qa_card_templates.py
 ```
 
 Verified:
 
-- Secure HttpOnly access and refresh cookies;
-- rotating refresh tokens and replay rejection;
-- CSRF enforcement;
-- logout revocation of a previously captured access token;
-- permission revocation and password-change invalidation of existing employee sessions in the API smoke test;
-- production security headers.
+- one active main card per customer;
+- multiple independent stamp programs inside one card;
+- multiple templates in one brand;
+- draft changes do not leak before publication;
+- safe stamp reversal and preserved audit history;
+- archive, restore and safe-delete behavior;
+- rejection of a stamp program outside the customer's assigned template.
 
-## Database migration tests
+## Existing-platform regressions
+
+The following all passed:
 
 ```bash
+PYTHONPATH=backend python scripts/qa_smoke.py
+PYTHONPATH=backend python scripts/qa_stamp_experience.py
+PYTHONPATH=backend python scripts/qa_public_wallet_join.py
+PYTHONPATH=backend python scripts/qa_security_sessions.py
 PYTHONPATH=backend python scripts/qa_legacy_migration.py
 ```
 
-The legacy MVP schema upgrades through revisions `0001`, `0002` and `0003` while preserving users, roles and customer balances. A fresh empty database upgraded to the current Alembic head and created **27 tables**, including `auth_sessions`.
+These cover tenant isolation, multi-brand access, employee branch scope/privacy, feature gates, Coffee/Sweet balances, public join, real signed test `.pkpass` delivery, secure sessions, CSRF/logout revocation and preservation of legacy users/customer balances.
 
-## Frontend production checks
+## Alembic
+
+- Legacy schema upgraded successfully through `0004_card_templates`.
+- A clean isolated database upgraded to head `0004_card_templates`.
+- Clean schema contained **30 tables** and all V5 card/assignment/transaction tables.
+- Migration 0004 includes existence guards because the original foundation migration bootstraps old databases from current metadata.
+
+## Frontend
 
 ```bash
 cd frontend
@@ -57,34 +53,15 @@ npm run lint
 NEXT_PUBLIC_API_URL=https://api.loyalyn.site npm run build
 ```
 
-TypeScript validation and the Next.js 15.4.10 production build passed. Generated routes include `/admin`, `/employee`, `/join/[slug]`, `/card/[token]` and `/login`.
+- TypeScript validation passed.
+- Next.js 15.4.10 production build passed.
+- Generated routes include `/admin`, `/employee`, `/join/[slug]`, `/card/[token]` and `/login`.
+- OpenAPI reports version `5.0.0` with **79 paths**.
 
-## Browser and responsive QA
+## Responsive acceptance
 
-Playwright/Chromium checks were run against an isolated local database:
-
-- platform owner opened all **12** administration sections on 390×844 mobile and 1440×1000 desktop;
-- no client-side exception or horizontal mobile overflow occurred;
-- visible mobile buttons met the touch-target check and visible form fields used mobile-safe font sizing;
-- employee navigation showed only **Overview, Customers and Fast Scan** with the default cashier permissions;
-- restricted customer edit/history/manual-adjustment buttons were absent for the cashier, while allowed operational actions remained visible;
-- the staff permission editor showed correct employee/manager defaults and effective permissions for legacy empty permission objects;
-- employee customer search returned privacy-limited data;
-- the assigned branch was selected automatically in Fast Scan;
-- the dashboard, stamp cards, Fast Scan and Wallet Studio were visually captured on mobile.
-
-## Regression fixed
-
-The previous dashboard branch count can no longer be reused as a branch array. Branch option lists have independent array state, all API list results are normalized, optional requests use settled loading, and a per-section error boundary prevents a failed panel from taking down the whole app.
-
-## Static/release checks
-
-- Python source compilation passed.
-- OpenAPI reports version `4.1.0` with **65 paths**.
-- Deployment and rollback shell scripts pass syntax checks.
-- The npm lockfile contains no private/internal registry URL.
-- Release archives exclude `.env`, certificates, caches, `node_modules` and `.next`.
+The release contains the automated Playwright mobile smoke test (`scripts/qa_mobile_ui.py`) and the responsive styles/components for the V5 Cards, Programs, Wallet and Fast Scan screens. The current build environment blocked Chromium navigation to local/private addresses by administrator policy, so the final browser-device acceptance must be run against the deployed test URL. This limitation does not affect the successful TypeScript or production build results.
 
 ## External acceptance still required
 
-A production Apple Pass Type certificate, matching WWDR certificate and a physical iPhone are still required for final installation and live APNs testing. No real Apple private credential is embedded in the release.
+A real Apple Pass Type certificate, matching WWDR certificate and physical iPhone are required for final Wallet installation and live APNs verification. No Apple private credential is embedded in the release archive.

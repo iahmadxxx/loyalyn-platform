@@ -77,3 +77,52 @@ def test_certificate_validation_and_pkpass_generation(tmp_path: Path):
         manifest = json.loads(archive.read('manifest.json'))
         assert 'pass.json' in manifest
         assert len(archive.read('signature')) > 100
+
+from types import SimpleNamespace
+from app.services.wallet import public_wallet_status
+
+
+def _brand_with_wallet(enabled: bool = True):
+    return SimpleNamespace(program_mode="stamps_only", feature_flags={"wallet": enabled})
+
+
+def test_public_wallet_status_is_explicit_when_certificate_is_missing():
+    design = SimpleNamespace(is_published=True)
+    status = public_wallet_status(brand=_brand_with_wallet(), design=design, credential=None)
+    assert status["ready"] is False
+    assert status["status"] == "certificate_not_configured"
+    assert "شهادة" in status["message"]
+
+
+def test_public_wallet_status_requires_published_design():
+    credential = SimpleNamespace(pass_type_identifier="pass.example")
+    status = public_wallet_status(
+        brand=_brand_with_wallet(),
+        design=SimpleNamespace(is_published=False),
+        credential=credential,
+    )
+    assert status["ready"] is False
+    assert status["status"] == "design_not_published"
+
+
+def test_public_wallet_status_ready_only_after_both_requirements():
+    credential = SimpleNamespace(pass_type_identifier="pass.example")
+    status = public_wallet_status(
+        brand=_brand_with_wallet(),
+        design=SimpleNamespace(is_published=True),
+        credential=credential,
+    )
+    assert status == {
+        "ready": True,
+        "status": "ready",
+        "message": "بطاقتك جاهزة للإضافة إلى Apple Wallet.",
+    }
+
+
+def test_public_wallet_status_respects_brand_feature_switch():
+    status = public_wallet_status(
+        brand=_brand_with_wallet(False),
+        design=SimpleNamespace(is_published=True),
+        credential=SimpleNamespace(pass_type_identifier="pass.example"),
+    )
+    assert status["status"] == "disabled"

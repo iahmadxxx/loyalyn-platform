@@ -3,7 +3,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
-from app.api.routes import auth, brands, customers, dashboard, health, management, notifications, public, stamps, wallet
+from app.api.routes import auth, brands, cards, customers, dashboard, health, management, notifications, public, stamps, wallet
 from app.core.config import get_settings
 from app.core.security import hash_password
 from app.db.session import AsyncSessionLocal
@@ -54,4 +54,5 @@ app.include_router(customers.router, prefix="/api/customers", tags=["customers"]
 app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
 app.include_router(wallet.router, prefix="/api/wallet", tags=["wallet"])
 app.include_router(stamps.router, prefix="/api/stamps", tags=["stamps"])
+app.include_router(cards.router, prefix="/api/cards", tags=["cards"])
 app.include_router(public.router, prefix="/api/public", tags=["public"])

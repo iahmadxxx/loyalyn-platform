@@ -12,13 +12,14 @@ from app.core.config import get_settings
 from app.core.security import encrypt_secret
 from app.db.session import get_db
 from app.models import (
-    Brand, BrandWalletDesign, Customer, CustomerStampCard, PlatformWalletCredential, StampProgram, WalletDevice,
+    Brand, BrandWalletDesign, CardTemplate, Customer, CustomerStampCard, PlatformWalletCredential, StampProgram, WalletDevice,
     WalletPass, WalletRegistration,
 )
 from app.schemas.common import WalletDesignUpdate, WalletPushToken
 from app.services.audit import add_audit
 from app.services.capabilities import brand_capabilities
-from app.services.wallet import active_credential, generate_pkpass_bytes, validate_and_extract_certificate
+from app.services.cards import active_template_for_customer, customer_template_cards, published_design, template_out
+from app.services.wallet import active_credential, generate_pkpass_bytes, public_wallet_status, validate_and_extract_certificate
 
 router = APIRouter()
 settings = get_settings()
@@ -74,17 +75,13 @@ async def ensure_design(db: AsyncSession, brand: Brand) -> BrandWalletDesign:
 async def pass_entities(db: AsyncSession, wallet_pass: WalletPass):
     customer = await db.get(Customer, wallet_pass.customer_id)
     brand = await db.get(Brand, wallet_pass.brand_id)
-    design = await ensure_design(db, brand)
-    stamp_rows = (await db.execute(
-        select(CustomerStampCard, StampProgram)
-        .join(StampProgram, StampProgram.id == CustomerStampCard.stamp_program_id)
-        .where(
-            CustomerStampCard.customer_id == customer.id,
-            CustomerStampCard.is_active.is_(True),
-            StampProgram.is_active.is_(True),
-        )
-        .order_by(StampProgram.sort_order, StampProgram.created_at)
-    )).all()
+    if not customer or not brand:
+        raise HTTPException(404, "البطاقة أو العميل غير موجود")
+    template = await db.get(CardTemplate, wallet_pass.card_template_id) if wallet_pass.card_template_id else None
+    if not template or template.brand_id != brand.id or template.status == "archived":
+        _, template = await active_template_for_customer(db, customer)
+        wallet_pass.card_template_id = template.id
+    template, stamp_rows = await customer_template_cards(db, customer)
     customer._wallet_stamp_cards = [
         {
             "id": str(program.id), "name": program.name, "stamps": card.stamps,
@@ -94,9 +91,11 @@ async def pass_entities(db: AsyncSession, wallet_pass: WalletPass):
     credential = await active_credential(db)
     if not credential:
         raise HTTPException(503, "شهادة Apple Wallet المركزية غير مهيأة")
-    if not design.is_published:
-        raise HTTPException(409, "يجب نشر تصميم البطاقة أولًا")
-    return credential, brand, customer, design
+    if template.status != "published":
+        raise HTTPException(409, "يجب نشر البطاقة المختارة قبل الإصدار")
+    if wallet_pass.pass_type_identifier != credential.pass_type_identifier:
+        wallet_pass.pass_type_identifier = credential.pass_type_identifier
+    return credential, brand, customer, published_design(template)
 
 
 def check_apple_auth(header: str | None, wallet_pass: WalletPass) -> None:
@@ -301,13 +300,13 @@ async def issue_pass(customer_id: uuid.UUID, request: Request, db: AsyncSession 
     if not credential:
         raise HTTPException(409, "شهادة Apple Wallet المركزية غير مهيأة")
     brand = await db.get(Brand, customer.brand_id)
-    design = await ensure_design(db, brand)
-    if not design.is_published:
-        raise HTTPException(409, "يجب حفظ تصميم البطاقة ونشره قبل الإصدار")
+    _, template = await active_template_for_customer(db, customer)
+    if template.status != "published":
+        raise HTTPException(409, "يجب نشر البطاقة المختارة قبل الإصدار")
     wallet_pass = await db.scalar(select(WalletPass).where(WalletPass.customer_id == customer.id, WalletPass.brand_id == customer.brand_id))
     if not wallet_pass:
         wallet_pass = WalletPass(
-            brand_id=customer.brand_id, customer_id=customer.id,
+            brand_id=customer.brand_id, customer_id=customer.id, card_template_id=template.id,
             serial_number=secrets.token_urlsafe(18), public_token=secrets.token_urlsafe(28),
             authentication_token=secrets.token_urlsafe(32), pass_type_identifier=credential.pass_type_identifier,
             update_tag=1,
@@ -316,6 +315,7 @@ async def issue_pass(customer_id: uuid.UUID, request: Request, db: AsyncSession 
         await db.flush()
     else:
         wallet_pass.status = "active"
+        wallet_pass.card_template_id = template.id
         wallet_pass.pass_type_identifier = credential.pass_type_identifier
         if not wallet_pass.authentication_token:
             wallet_pass.authentication_token = secrets.token_urlsafe(32)
@@ -344,7 +344,17 @@ async def public_pkpass(token: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(503, str(exc)) from exc
     wallet_pass.last_generated_at = datetime.now(timezone.utc)
     await db.commit()
-    return Response(data, media_type="application/vnd.apple.pkpass", headers={"Content-Disposition": f'attachment; filename="{brand.slug}-{customer.membership_code}.pkpass"', "Cache-Control": "no-store"})
+    return Response(
+        data,
+        media_type="application/vnd.apple.pkpass",
+        headers={
+            "Content-Disposition": f'attachment; filename="{brand.slug}-{customer.membership_code}.pkpass"',
+            "Content-Transfer-Encoding": "binary",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/public/card/{token}")
@@ -354,19 +364,29 @@ async def public_card(token: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "البطاقة غير موجودة")
     customer = await db.get(Customer, wallet_pass.customer_id)
     brand = await db.get(Brand, wallet_pass.brand_id)
-    design = await ensure_design(db, brand)
-    stamp_rows = (await db.execute(
-        select(CustomerStampCard, StampProgram)
-        .join(StampProgram, StampProgram.id == CustomerStampCard.stamp_program_id)
-        .where(CustomerStampCard.customer_id == customer.id, CustomerStampCard.is_active.is_(True), StampProgram.is_active.is_(True))
-        .order_by(StampProgram.sort_order, StampProgram.created_at)
-    )).all()
+    template, stamp_rows = await customer_template_cards(db, customer)
+    if wallet_pass.card_template_id != template.id:
+        wallet_pass.card_template_id = template.id
+    credential = await active_credential(db)
+    fallback_design = await ensure_design(db, brand)
+    wallet = public_wallet_status(brand=brand, design=fallback_design, credential=credential, card_template=template)
+    download_url = (
+        f"{settings.public_api_url.rstrip('/')}/api/wallet/public/{wallet_pass.public_token}.pkpass"
+        if wallet["ready"] else None
+    )
+    wallet.update({
+        "card_url": f"{settings.public_web_url.rstrip('/')}/card/{wallet_pass.public_token}",
+        "download_url": download_url,
+    })
+    await db.commit()
     return {
         "brand": {"name": brand.name, "slug": brand.slug, "logo_url": brand.logo_url, "primary_color": brand.primary_color, "accent_color": brand.accent_color, "program_mode": brand.program_mode},
         "customer": {"name": customer.name, "points": customer.points, "stamps": customer.stamps, "rewards": customer.available_rewards, "tier": customer.tier, "membership_code": customer.membership_code},
         "stamp_cards": [{"id": str(program.id), "name": program.name, "stamps": card.stamps, "required_stamps": program.required_stamps, "rewards_available": card.rewards_available, "background_color": program.background_color, "accent_color": program.accent_color, "stamp_icon": program.stamp_icon} for card, program in stamp_rows],
-        "design": design_out(design),
-        "download_url": f"{settings.public_api_url.rstrip('/')}/api/wallet/public/{wallet_pass.public_token}.pkpass",
+        "card_template": await template_out(db, template, include_usage=False, published_view=True),
+        "design": await template_out(db, template, include_usage=False, published_view=True),
+        "wallet": wallet,
+        "download_url": download_url,
     }
 
 

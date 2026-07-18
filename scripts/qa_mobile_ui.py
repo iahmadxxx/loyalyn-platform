@@ -26,10 +26,10 @@ OWNER_EMAIL = os.getenv("LOYALYN_OWNER_EMAIL")
 OWNER_PASSWORD = os.getenv("LOYALYN_OWNER_PASSWORD")
 EMPLOYEE_EMAIL = os.getenv("LOYALYN_EMPLOYEE_EMAIL")
 EMPLOYEE_PASSWORD = os.getenv("LOYALYN_EMPLOYEE_PASSWORD")
-OUT = Path(os.getenv("LOYALYN_QA_SCREENSHOTS", "/tmp/loyalyn-v41-ui"))
+OUT = Path(os.getenv("LOYALYN_QA_SCREENSHOTS", "/tmp/loyalyn-v5-ui"))
 OUT.mkdir(parents=True, exist_ok=True)
 OWNER_TABS = [
-    "نظرة عامة", "البراندات", "الفروع", "العملاء", "الموظفون", "بطاقات الأختام",
+    "نظرة عامة", "البراندات", "الفروع", "العملاء", "الموظفون", "البطاقات", "برامج الأختام",
     "السكان السريع", "محرك الولاء", "استوديو البطاقة", "الإشعارات والحملات",
     "سجل التدقيق", "شهادة Apple المركزية",
 ]

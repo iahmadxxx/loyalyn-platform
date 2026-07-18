@@ -3,7 +3,7 @@
 import {
   LayoutDashboard, Building2, MapPin, Users, UserCog, SlidersHorizontal,
   WalletCards, Bell, ScrollText, ShieldCheck, LogOut, Menu, X, Stamp,
-  ScanLine, ChevronLeft
+  ScanLine, ChevronLeft, CreditCard, MoreHorizontal
 } from 'lucide-react'
 import {useEffect, useMemo, useState} from 'react'
 import {logout} from '@/lib/api'
@@ -22,7 +22,8 @@ const baseItems:NavItem[]=[
   {id:'branches',label:'الفروع',icon:MapPin,permission:'branches.view'},
   {id:'customers',label:'العملاء',icon:Users,permission:'customers.view'},
   {id:'staff',label:'الموظفون',icon:UserCog,permission:'staff.view'},
-  {id:'stamp-cards',label:'بطاقات الأختام',icon:Stamp,permission:'loyalty.manage',capability:'stamps'},
+  {id:'cards',label:'البطاقات',icon:CreditCard,permission:'loyalty.manage',capability:'stamps'},
+  {id:'stamp-cards',label:'برامج الأختام',icon:Stamp,permission:'loyalty.manage',capability:'stamps'},
   {id:'scan',label:'السكان السريع',icon:ScanLine,permission:'fast_scan.use',capability:'fast_scan'},
   {id:'loyalty',label:'محرك الولاء',icon:SlidersHorizontal,permission:'loyalty.manage'},
   {id:'wallet',label:'استوديو البطاقة',icon:WalletCards,permission:'wallet.design',capability:'wallet'},
@@ -71,6 +72,12 @@ export function Shell({children,active,onChange,role,accessRole,userName,brandNa
 
   const choose=(id:string)=>{onChange(id);setMobileOpen(false)}
   const scanVisible=items.some(item=>item.id==='scan')
+  const bottomItems=[
+    {id:'overview',label:'الرئيسية',icon:LayoutDashboard},
+    ...(scanVisible?[{id:'scan',label:'السكان',icon:ScanLine}]:[]),
+    ...(items.some(item=>item.id==='customers')?[{id:'customers',label:'العملاء',icon:Users}]:[]),
+    ...(items.some(item=>item.id==='cards')?[{id:'cards',label:'البطاقات',icon:CreditCard}]:[]),
+  ].slice(0,4)
 
   return <div className="app-shell grid-bg">
     <header className="mobile-header">
@@ -91,5 +98,9 @@ export function Shell({children,active,onChange,role,accessRole,userName,brandNa
       <button type="button" onClick={()=>void logout()} className="nav-btn danger"><LogOut size={18}/><span>تسجيل الخروج</span></button>
     </aside>
     <main className="app-main">{children}</main>
+    <nav className="mobile-bottom-nav" aria-label="التنقل السريع">
+      {bottomItems.map(({id,label,icon:Icon})=><button key={id} type="button" onClick={()=>choose(id)} className={active===id?'active':''}><Icon size={19}/><span>{label}</span></button>)}
+      <button type="button" onClick={()=>setMobileOpen(true)} className={mobileOpen?'active':''}><MoreHorizontal size={20}/><span>المزيد</span></button>
+    </nav>
   </div>
 }

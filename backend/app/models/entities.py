@@ -218,6 +218,8 @@ class StampProgram(UUIDTimestampMixin, Base):
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     __table_args__ = (UniqueConstraint("brand_id", "slug", name="uq_stamp_program_brand_slug"),)
 
 
@@ -251,6 +253,60 @@ class StampTransaction(UUIDTimestampMixin, Base):
     idempotency_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    original_transaction_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("stamp_transactions.id", ondelete="SET NULL"), nullable=True, index=True)
+    reversal_transaction_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("stamp_transactions.id", ondelete="SET NULL"), nullable=True, index=True)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    reversed_by_actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reversal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CardTemplate(UUIDTimestampMixin, Base):
+    __tablename__ = "card_templates"
+    brand_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    name_en: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    slug: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    allow_public_join: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    background_color: Mapped[str] = mapped_column(String(7), default="#111827")
+    foreground_color: Mapped[str] = mapped_column(String(7), default="#FFFFFF")
+    label_color: Mapped[str] = mapped_column(String(7), default="#C6FF4A")
+    logo_text: Mapped[str] = mapped_column(String(120), default="LOYALYN")
+    card_title: Mapped[str] = mapped_column(String(120), default="بطاقة الولاء")
+    logo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hero_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    background_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    strip_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    layout_style: Mapped[str] = mapped_column(String(30), default="classic")
+    overlay_opacity: Mapped[int] = mapped_column(Integer, default=25)
+    barcode_format: Mapped[str] = mapped_column(String(40), default="PKBarcodeFormatQR")
+    fields: Mapped[dict] = mapped_column(JSON, default=dict)
+    terms: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_version: Mapped[int] = mapped_column(Integer, default=1)
+    published_version: Mapped[int] = mapped_column(Integer, default=0)
+    published_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (UniqueConstraint("brand_id", "slug", name="uq_card_template_brand_slug"),)
+
+
+class CardTemplateProgram(UUIDTimestampMixin, Base):
+    __tablename__ = "card_template_programs"
+    card_template_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("card_templates.id", ondelete="CASCADE"), index=True)
+    stamp_program_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stamp_programs.id", ondelete="RESTRICT"), index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_visible: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (UniqueConstraint("card_template_id", "stamp_program_id", name="uq_card_template_program"),)
+
+
+class CustomerCardAssignment(UUIDTimestampMixin, Base):
+    __tablename__ = "customer_card_assignments"
+    brand_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
+    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"), unique=True, index=True)
+    card_template_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("card_templates.id", ondelete="RESTRICT"), index=True)
+    assigned_by_actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
 
 class BrandWalletDesign(UUIDTimestampMixin, Base):
@@ -294,6 +350,7 @@ class WalletPass(UUIDTimestampMixin, Base):
     __tablename__ = "wallet_passes"
     brand_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
     customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"), index=True)
+    card_template_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("card_templates.id", ondelete="SET NULL"), nullable=True, index=True)
     serial_number: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     public_token: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     authentication_token: Mapped[str] = mapped_column(String(100), unique=True)

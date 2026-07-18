@@ -8,7 +8,7 @@ import zipfile
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 import httpx
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from sqlalchemy import select
@@ -16,9 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.security import decrypt_secret
 from app.models import (
-    Brand, BrandWalletDesign, Customer, PlatformWalletCredential, WalletDevice,
+    Brand, BrandWalletDesign, CardTemplate, Customer, PlatformWalletCredential, WalletDevice,
     WalletPass, WalletRegistration,
 )
+from app.services.capabilities import brand_capabilities
 
 settings = get_settings()
 
@@ -141,7 +142,7 @@ def render_asset(source: str | None, size: tuple[int, int], *, contain: bool = T
 
 def build_pass_json(
     *, credential: PlatformWalletCredential, brand: Brand, customer: Customer,
-    design: BrandWalletDesign, wallet_pass: WalletPass,
+    design: Any, wallet_pass: WalletPass,
 ) -> dict:
     fields = design.fields or {}
     primary = []
@@ -163,18 +164,35 @@ def build_pass_json(
     ]
     stamp_cards = list(getattr(customer, "_wallet_stamp_cards", []) or [])
     if fields.get("show_stamps", True) and stamp_cards:
-        # Apple Wallet has limited field space, so the first active card is prominent
-        # and every active card remains available on the back of the pass.
-        first = stamp_cards[0]
+        # One Apple Wallet pass can represent several independent stamp
+        # programs.  Apple controls the physical field layout, so the first
+        # two programs are shown on the front, up to three more are shown in
+        # auxiliary fields, and every program remains available on the back.
+        primary = [{"key": "memberName", "label": "العضو", "value": customer.name}]
         secondary = [item for item in secondary if item.get("key") != "stamps"]
-        secondary.insert(0, {
-            "key": "stampCard", "label": first["name"],
-            "value": f"{first['stamps']} / {first['required_stamps']}",
-        })
+        stamp_front = [
+            {
+                "key": f"stampCard{index}",
+                "label": card["name"],
+                "value": f"{card['stamps']} / {card['required_stamps']}",
+            }
+            for index, card in enumerate(stamp_cards[:2])
+        ]
+        secondary = stamp_front + secondary[: max(0, 2 - len(stamp_front))]
+        extra_stamp_fields = [
+            {
+                "key": f"stampExtra{index}",
+                "label": card["name"],
+                "value": f"{card['stamps']} / {card['required_stamps']}",
+            }
+            for index, card in enumerate(stamp_cards[2:5], start=2)
+        ]
+        auxiliary = extra_stamp_fields + auxiliary[: max(0, 3 - len(extra_stamp_fields))]
         for index, card in enumerate(stamp_cards):
+            ready_text = f" · مكافآت جاهزة: {card['rewards_available']}" if card["rewards_available"] else ""
             back_fields.append({
                 "key": f"stampProgram{index}", "label": card["name"],
-                "value": f"{card['stamps']} من {card['required_stamps']} · مكافآت جاهزة: {card['rewards_available']}",
+                "value": f"{card['stamps']} من {card['required_stamps']}{ready_text}",
             })
     if design.terms:
         back_fields.append({"key": "terms", "label": "الشروط والأحكام", "value": design.terms})
@@ -209,7 +227,7 @@ def build_pass_json(
 
 def generate_pkpass_bytes(
     *, credential: PlatformWalletCredential, brand: Brand, customer: Customer,
-    design: BrandWalletDesign, wallet_pass: WalletPass,
+    design: Any, wallet_pass: WalletPass,
 ) -> bytes:
     cert_path, key_path, wwdr_path = credential_paths(credential)
     for required in (cert_path, key_path, wwdr_path):
@@ -248,6 +266,58 @@ def generate_pkpass_bytes(
                 if file.is_file():
                     archive.write(file, file.name)
         return output.getvalue()
+
+
+def public_wallet_status(
+    *,
+    brand: Brand,
+    design: BrandWalletDesign | None,
+    credential: PlatformWalletCredential | None,
+    card_template: CardTemplate | None = None,
+) -> dict:
+    """Return a stable public status for the customer Wallet journey.
+
+    The public UI must never present the membership QR as if it were the
+    Apple Wallet pass.  These explicit states let it show the correct call to
+    action and a useful setup message when signing is not ready yet.
+    """
+    if not brand_capabilities(brand).get("wallet"):
+        return {
+            "ready": False,
+            "status": "disabled",
+            "message": "ميزة Apple Wallet غير مفعلة لهذا البراند.",
+        }
+    if not credential:
+        return {
+            "ready": False,
+            "status": "certificate_not_configured",
+            "message": "تم إنشاء عضويتك، لكن شهادة Apple Wallet المركزية لم تُجهز بعد.",
+        }
+    if card_template is not None:
+        if card_template.status != "published":
+            return {
+                "ready": False,
+                "status": "card_template_not_published",
+                "message": "تم إنشاء عضويتك، لكن بطاقة البراند المختارة لم تُنشر بعد.",
+            }
+    else:
+        if not design:
+            return {
+                "ready": False,
+                "status": "design_missing",
+                "message": "تم إنشاء عضويتك، لكن تصميم بطاقة Apple Wallet لم يُجهز بعد.",
+            }
+        if not design.is_published:
+            return {
+                "ready": False,
+                "status": "design_not_published",
+                "message": "تم إنشاء عضويتك، لكن مدير البراند لم ينشر تصميم البطاقة بعد.",
+            }
+    return {
+        "ready": True,
+        "status": "ready",
+        "message": "بطاقتك جاهزة للإضافة إلى Apple Wallet.",
+    }
 
 
 async def active_credential(db: AsyncSession) -> PlatformWalletCredential | None:

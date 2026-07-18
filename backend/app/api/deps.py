@@ -14,7 +14,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "brand_admin": {"*"},
     "manager": {
         "brand.view", "branches.view", "branches.manage", "customers.view", "customers.list", "customers.manage", "customers.create", "customers.edit", "customers.history",
-        "loyalty.view", "loyalty.manage", "loyalty.apply", "loyalty.manual", "rewards.redeem", "staff.view",
+        "loyalty.view", "loyalty.manage", "loyalty.apply", "loyalty.manual", "loyalty.reverse", "rewards.redeem", "staff.view",
         "wallet.view", "wallet.design", "wallet.issue", "campaigns.view", "campaigns.manage", "audit.view", "fast_scan.use",
     },
     "employee": {

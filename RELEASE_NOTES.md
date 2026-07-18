@@ -1,48 +1,50 @@
-# Loyalyn 4.1.0 Release Notes
+# Loyalyn 5.0.0 Release Notes
 
-## Critical frontend reliability fix
+## One Wallet card, multiple stamp programs
 
-- Separated dashboard branch counts from branch option arrays.
-- Normalized every list response before `.map()` or `.filter()`.
-- Cleared stale section state when switching tabs or brands.
-- Used settled loading for optional requests so one denied/nonessential endpoint does not crash a whole page.
-- Added a section error boundary with an Arabic retry action instead of a full black application screen.
+- Added reusable card templates per brand.
+- A single customer card can contain Coffee, Sweet, Breakfast and other independent stamp programs.
+- Added Coffee-only, Coffee + Sweet, VIP and any custom card combination through the same editor.
+- Existing brands receive a compatible default published template automatically.
 
-## Mobile redesign
+## Full card-template management
 
-- Added a fixed compact mobile header, slide-out RTL menu and quick Fast Scan button.
-- Reflowed grids, forms, customer cards, Wallet Studio and stamp tools for phone widths.
-- Added mobile bottom-sheet dialogs, safe table overflow, 44px touch targets and 16px form controls.
-- Prevented horizontal overflow on tested 390×844 mobile screens.
+- Create, edit, reorder, duplicate, publish, unpublish, archive, restore and safe-delete templates.
+- Draft edits are isolated from customers until publication.
+- Publishing updates the customer-facing representation and active Wallet records.
+- Template artwork supports logo, hero, strip and full-background assets.
 
-## Permission-aware employee experience
+## Stamp-program lifecycle
 
-- Added effective permissions to `/api/auth/me` and per-brand access data.
-- Added explicit employee/manager permission presets and a manager-facing permission editor that stores both grants and revocations.
-- Default cashier navigation now focuses on Overview, Customer Search and Fast Scan.
-- Added a branch-options endpoint that returns only the employee's permitted branch.
-- Forced employee operations to the assigned branch on the backend.
-- Replaced full customer downloads with privacy-limited two-character server search for employees without `customers.list`.
-- Separated customer registration, editing, history, ordinary loyalty actions, manual balance adjustment, reward redemption and Wallet issue permissions so only valid buttons appear.
-- Prevented delegated users from granting permissions above their own and revoke active sessions after an employee password change.
-- Added minimal reward/coupon option endpoints for operational redemption without exposing configuration screens.
+- Create and edit arbitrary program labels, targets, rewards, colors and artwork.
+- Archive, restore and safely delete unused programs.
+- Programs already referenced by historical operations are protected from destructive deletion.
+- Template ordering controls the order shown to staff and customers.
 
-## Secure browser authentication
+## Customer assignment and registration
 
-- Replaced seven-day `localStorage` JWT usage with short-lived access cookies and rotating refresh cookies.
-- Added server-side `auth_sessions` records and migration `0003_security_sessions`.
-- Added refresh replay prevention, server-side logout revocation and CSRF validation.
-- Added production HSTS, CSP, frame denial, content-type, referrer and permissions-policy headers.
+- Added one active main-card assignment per customer and brand.
+- Managers can change a customer's card template without duplicating the account.
+- Public registration lets the customer choose from published cards enabled for public join.
+- Stable membership QR and Apple Wallet readiness remain separate and explicit.
 
-## V4 features preserved
+## Fast Scan and reversal
 
-- Per-brand Stamps only, Points only, Stamps + points, Full and Custom profiles.
-- Independent Coffee/Sweet/product stamp cards, public join QR and Fast Scan.
-- Points, cashback, tiers, rewards, coupons and campaigns when enabled.
-- Wallet Studio and platform-owner-only central Apple credential.
-- Feature switches continue to preserve disabled-feature data.
+- Fast Scan displays only programs included in the customer's assigned card.
+- Added auditable reversal of an accidental stamp/redeem operation.
+- Reversal restores exact prior values, retains the original record and creates a compensating transaction.
+- Duplicate, unauthorized and cross-template operations are blocked server-side.
 
-## Deployment robustness
+## Compatibility and migrations
 
-- Health checks now retry connection-refused and transient startup errors for both API and frontend.
-- The public npm registry remains pinned and no internal artifact URL is present.
+- Added Alembic revision `0004_card_templates`.
+- Migration is idempotent for old bootstrapped schemas and normal PostgreSQL upgrades.
+- Existing customers, balances, brand profiles, Wallet designs, employees, permissions and audit history are preserved.
+- The deployment preflight retains the Alembic revision-column widening fix.
+
+## Frontend and mobile
+
+- Added a dedicated Cards section and a separate Stamp Programs section.
+- Updated Wallet Studio to preview and issue published templates.
+- Updated public join and customer card pages for multi-program cards.
+- Added responsive template editors, ordered program picker, operation history and mobile quick navigation.

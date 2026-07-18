@@ -95,7 +95,7 @@ async def main() -> None:
 
             print(json.dumps({
                 'ok': True,
-                'version': '4.1.0',
+                'version': '5.0.0',
                 'http_only_access': True,
                 'rotating_refresh': True,
                 'csrf': True,

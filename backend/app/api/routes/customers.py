@@ -7,13 +7,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import PLATFORM_ROLES, brand_access, current_user, effective_permissions, operational_branch
 from app.db.session import get_db
-from app.models import Brand, Branch, Coupon, CouponRedemption, Customer, CustomerStampCard, LoyaltyProgram, LoyaltyTransaction, Reward, StampProgram, WalletPass
+from app.models import Brand, Branch, CardTemplate, Coupon, CouponRedemption, Customer, CustomerStampCard, LoyaltyProgram, LoyaltyTransaction, Reward, StampProgram, WalletPass
 from app.schemas.common import (
     CouponRedeem, CustomerCreate, CustomerUpdate, EarnedRewardRedeem, LoyaltyApply,
     LoyaltyProgramUpdate, RewardRedeem, TransactionReverse,
 )
 from app.services.audit import add_audit
 from app.services.capabilities import brand_capabilities, loyalty_program_type
+from app.services.cards import assign_template, ensure_default_template
 from app.services.loyalty import apply_loyalty, consume_point_buckets, program_dict, recalculate_tier
 from app.services.wallet import push_pass_update
 
@@ -93,6 +94,7 @@ async def list_customers(
 async def create_customer(payload: CustomerCreate, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     access = await brand_access(db, user, payload.brand_id, permission="customers.create")
     data = payload.model_dump()
+    requested_template_id = data.pop("card_template_id", None)
     data["home_branch_id"] = operational_branch(access, payload.home_branch_id)
     await ensure_branch(db, data["home_branch_id"], payload.brand_id)
     existing = await db.scalar(select(Customer).where(Customer.brand_id == payload.brand_id, Customer.phone == payload.phone))
@@ -103,9 +105,17 @@ async def create_customer(payload: CustomerCreate, request: Request, db: AsyncSe
     await db.flush()
     brand = await db.get(Brand, payload.brand_id)
     if brand and brand_capabilities(brand).get("stamps"):
-        programs = list((await db.scalars(select(StampProgram).where(StampProgram.brand_id == payload.brand_id, StampProgram.is_active.is_(True)))).all())
-        for stamp_program in programs:
-            db.add(CustomerStampCard(brand_id=payload.brand_id, customer_id=customer.id, stamp_program_id=stamp_program.id))
+        template = await db.get(CardTemplate, requested_template_id) if requested_template_id else None
+        if template and (template.brand_id != brand.id or template.status != "published"):
+            raise HTTPException(422, "البطاقة المختارة غير متاحة أو لم تُنشر بعد")
+        if not template:
+            template = await db.scalar(select(CardTemplate).where(
+                CardTemplate.brand_id == brand.id,
+                CardTemplate.status == "published",
+            ).order_by(CardTemplate.is_default.desc(), CardTemplate.sort_order, CardTemplate.created_at))
+        if not template:
+            template = await ensure_default_template(db, brand)
+        await assign_template(db, customer, template, actor_id=user.id)
     add_audit(db, actor_id=user.id, action="customer_created", entity_type="customer", entity_id=customer.id, brand_id=payload.brand_id, details={"name": customer.name, "phone": customer.phone}, ip_address=request.client.host if request.client else None)
     await db.commit()
     await db.refresh(customer)

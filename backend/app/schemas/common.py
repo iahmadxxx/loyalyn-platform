@@ -91,6 +91,7 @@ class StaffUpdate(BaseModel):
 
 class CustomerCreate(BaseModel):
     brand_id: UUID
+    card_template_id: UUID | None = None
     home_branch_id: UUID | None = None
     name: str = Field(min_length=2, max_length=120)
     phone: str = Field(min_length=5, max_length=32)
@@ -361,4 +362,66 @@ class PublicJoin(BaseModel):
     phone: str = Field(min_length=5, max_length=32)
     email: EmailStr | None = None
     birthday: date | None = None
+    selected_card_template_id: UUID | None = None
     selected_program_ids: list[UUID] = Field(default_factory=list)
+
+class CardTemplateCreate(BaseModel):
+    brand_id: UUID
+    name: str = Field(min_length=2, max_length=160)
+    name_en: str | None = Field(default=None, max_length=160)
+    slug: str = Field(pattern=r"^[a-z0-9-]+$", min_length=2, max_length=80)
+    description: str | None = Field(default=None, max_length=1500)
+    is_default: bool = False
+    allow_public_join: bool = True
+    sort_order: int = Field(default=0, ge=0, le=1000)
+    program_ids: list[UUID] = Field(default_factory=list)
+    background_color: str = Field(default="#111827", pattern=r"^#[0-9A-Fa-f]{6}$")
+    foreground_color: str = Field(default="#FFFFFF", pattern=r"^#[0-9A-Fa-f]{6}$")
+    label_color: str = Field(default="#C6FF4A", pattern=r"^#[0-9A-Fa-f]{6}$")
+    logo_text: str = Field(default="LOYALYN", min_length=1, max_length=120)
+    card_title: str = Field(default="بطاقة الولاء", min_length=1, max_length=120)
+    layout_style: str = Field(default="classic", pattern=r"^(classic|visual|minimal)$")
+    overlay_opacity: int = Field(default=25, ge=0, le=90)
+    barcode_format: str = Field(default="PKBarcodeFormatQR", pattern=r"^(PKBarcodeFormatQR|PKBarcodeFormatPDF417|PKBarcodeFormatAztec|PKBarcodeFormatCode128)$")
+    fields: dict = Field(default_factory=lambda: {"show_stamps": True, "show_rewards": True, "show_tier": False, "show_points": False, "show_visits": False})
+    terms: str | None = None
+
+    @field_validator("slug")
+    @classmethod
+    def normalize_card_template_slug(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class CardTemplateUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=160)
+    name_en: str | None = Field(default=None, max_length=160)
+    slug: str | None = Field(default=None, pattern=r"^[a-z0-9-]+$", min_length=2, max_length=80)
+    description: str | None = Field(default=None, max_length=1500)
+    is_default: bool | None = None
+    allow_public_join: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0, le=1000)
+    program_ids: list[UUID] | None = None
+    background_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    foreground_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    label_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    logo_text: str | None = Field(default=None, min_length=1, max_length=120)
+    card_title: str | None = Field(default=None, min_length=1, max_length=120)
+    layout_style: str | None = Field(default=None, pattern=r"^(classic|visual|minimal)$")
+    overlay_opacity: int | None = Field(default=None, ge=0, le=90)
+    barcode_format: str | None = Field(default=None, pattern=r"^(PKBarcodeFormatQR|PKBarcodeFormatPDF417|PKBarcodeFormatAztec|PKBarcodeFormatCode128)$")
+    fields: dict | None = None
+    terms: str | None = None
+
+    @field_validator("slug")
+    @classmethod
+    def normalize_optional_card_template_slug(cls, value: str | None) -> str | None:
+        return value.strip().lower() if value else value
+
+
+class CustomerCardAssignmentUpdate(BaseModel):
+    card_template_id: UUID
+
+
+class StampTransactionReverse(BaseModel):
+    reason: str = Field(min_length=2, max_length=500)
+    idempotency_key: str = Field(min_length=8, max_length=100)
