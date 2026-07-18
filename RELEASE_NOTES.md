@@ -1,42 +1,48 @@
-# Loyalyn 3.0.0 Release Notes
+# Loyalyn 4.1.0 Release Notes
 
-## Functional repair
+## Critical frontend reliability fix
 
-- Replaced silent front-end failures with consistent Arabic error messages, busy states and post-save refreshes.
-- Added working create, edit, activate/deactivate and detail workflows across brands, branches, customers, staff, loyalty configuration, tiers, rewards, coupons, campaigns and templates.
-- Added a searchable customer ledger with safe transaction reversal.
+- Separated dashboard branch counts from branch option arrays.
+- Normalized every list response before `.map()` or `.filter()`.
+- Cleared stale section state when switching tabs or brands.
+- Used settled loading for optional requests so one denied/nonessential endpoint does not crash a whole page.
+- Added a section error boundary with an Arabic retry action instead of a full black application screen.
 
-## Loyalty engine
+## Mobile redesign
 
-- Points, stamps, hybrid and cashback programs.
-- Per-visit/per-spend awards, tier/global/time/branch multipliers, daily cap and point expiry.
-- Birthday and referral awards, ready rewards, catalog rewards and coupons.
-- Idempotency keys and row locks reduce duplicate/concurrent balance changes.
+- Added a fixed compact mobile header, slide-out RTL menu and quick Fast Scan button.
+- Reflowed grids, forms, customer cards, Wallet Studio and stamp tools for phone widths.
+- Added mobile bottom-sheet dialogs, safe table overflow, 44px touch targets and 16px form controls.
+- Prevented horizontal overflow on tested 390×844 mobile screens.
 
-## Wallet Studio
+## Permission-aware employee experience
 
-- Central platform-owner certificate administration.
-- Brand-scoped design drafts and publishing.
-- Image upload, color/field/barcode customization and live preview.
-- Real signed `.pkpass` package generation and Wallet update endpoints.
+- Added effective permissions to `/api/auth/me` and per-brand access data.
+- Added explicit employee/manager permission presets and a manager-facing permission editor that stores both grants and revocations.
+- Default cashier navigation now focuses on Overview, Customer Search and Fast Scan.
+- Added a branch-options endpoint that returns only the employee's permitted branch.
+- Forced employee operations to the assigned branch on the backend.
+- Replaced full customer downloads with privacy-limited two-character server search for employees without `customers.list`.
+- Separated customer registration, editing, history, ordinary loyalty actions, manual balance adjustment, reward redemption and Wallet issue permissions so only valid buttons appear.
+- Prevented delegated users from granting permissions above their own and revoke active sessions after an employee password change.
+- Added minimal reward/coupon option endpoints for operational redemption without exposing configuration screens.
 
-## Campaigns
+## Secure browser authentication
 
-- Templates, immediate/scheduled delivery, recurrence and audiences by all customers, birthday, tier, points, inactivity, home branch, ready rewards or a selected customer list.
-- In-app, Wallet update, email/SMS/webhook bridges.
-- Worker delivery, retries, recipient statuses, clean cancellation of unsent recipients and completed/partial/failed states.
+- Replaced seven-day `localStorage` JWT usage with short-lived access cookies and rotating refresh cookies.
+- Added server-side `auth_sessions` records and migration `0003_security_sessions`.
+- Added refresh replay prevention, server-side logout revocation and CSRF validation.
+- Added production HSTS, CSP, frame denial, content-type, referrer and permissions-policy headers.
 
-## Security and stability
+## V4 features preserved
 
-- Brand isolation, branch-audience isolation and selected-customer validation tests.
-- Existing multi-brand account passwords are not replaced when another brand is assigned.
-- Per-brand deactivation does not disable access to a different active brand.
-- Central Wallet routes are denied to brand managers.
-- Audit JSON values are normalized safely.
+- Per-brand Stamps only, Points only, Stamps + points, Full and Custom profiles.
+- Independent Coffee/Sweet/product stamp cards, public join QR and Fast Scan.
+- Points, cashback, tiers, rewards, coupons and campaigns when enabled.
+- Wallet Studio and platform-owner-only central Apple credential.
+- Feature switches continue to preserve disabled-feature data.
 
-## 3.0.1
+## Deployment robustness
 
-- Removed private/internal npm artifact URLs from `frontend/package-lock.json`.
-- Forced Docker frontend builds to use the public npm registry.
-- Added a project-level `.npmrc` for reproducible production builds.
-- Fixes `ECONNREFUSED` while downloading Next.js during VPS deployment.
+- Health checks now retry connection-refused and transient startup errors for both API and frontend.
+- The public npm registry remains pinned and no internal artifact URL is present.

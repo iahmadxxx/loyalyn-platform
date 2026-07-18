@@ -17,6 +17,17 @@ class User(UUIDTimestampMixin, Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class AuthSession(UUIDTimestampMixin, Base):
+    __tablename__ = "auth_sessions"
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    refresh_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class Brand(UUIDTimestampMixin, Base):
     __tablename__ = "brands"
     name: Mapped[str] = mapped_column(String(120))
@@ -27,6 +38,11 @@ class Brand(UUIDTimestampMixin, Base):
     currency: Mapped[str] = mapped_column(String(8), default="QAR")
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Qatar")
     locale: Mapped[str] = mapped_column(String(12), default="ar")
+    program_mode: Mapped[str] = mapped_column(String(30), default="full", index=True)
+    feature_flags: Mapped[dict] = mapped_column(JSON, default=dict)
+    join_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    join_require_email: Mapped[bool] = mapped_column(Boolean, default=False)
+    join_welcome_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     branches = relationship("Branch", cascade="all, delete-orphan")
 
@@ -188,10 +204,53 @@ class StampProgram(UUIDTimestampMixin, Base):
     __tablename__ = "stamp_programs"
     brand_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(160))
+    slug: Mapped[str] = mapped_column(String(80))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     required_stamps: Mapped[int] = mapped_column(Integer, default=10)
     reward_title: Mapped[str] = mapped_column(String(160), default="مكافأة مجانية")
-    stamp_icon: Mapped[str] = mapped_column(String(40), default="star")
+    reward_type: Mapped[str] = mapped_column(String(30), default="free_item")
+    stamp_icon: Mapped[str] = mapped_column(String(40), default="coffee")
+    background_color: Mapped[str] = mapped_column(String(7), default="#111827")
+    accent_color: Mapped[str] = mapped_column(String(7), default="#C6FF4A")
+    card_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    empty_stamp_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filled_stamp_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (UniqueConstraint("brand_id", "slug", name="uq_stamp_program_brand_slug"),)
+
+
+class CustomerStampCard(UUIDTimestampMixin, Base):
+    __tablename__ = "customer_stamp_cards"
+    brand_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
+    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"), index=True)
+    stamp_program_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stamp_programs.id", ondelete="CASCADE"), index=True)
+    stamps: Mapped[int] = mapped_column(Integer, default=0)
+    rewards_available: Mapped[int] = mapped_column(Integer, default=0)
+    lifetime_stamps: Mapped[int] = mapped_column(Integer, default=0)
+    last_stamp_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    __table_args__ = (UniqueConstraint("customer_id", "stamp_program_id", name="uq_customer_stamp_program"),)
+
+
+class StampTransaction(UUIDTimestampMixin, Base):
+    __tablename__ = "stamp_transactions"
+    brand_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("branches.id", ondelete="SET NULL"), nullable=True, index=True)
+    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"), index=True)
+    stamp_program_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("stamp_programs.id", ondelete="RESTRICT"), index=True)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    action: Mapped[str] = mapped_column(String(30), index=True)
+    delta_stamps: Mapped[int] = mapped_column(Integer, default=0)
+    stamps_before: Mapped[int] = mapped_column(Integer, default=0)
+    stamps_after: Mapped[int] = mapped_column(Integer, default=0)
+    delta_rewards: Mapped[int] = mapped_column(Integer, default=0)
+    rewards_before: Mapped[int] = mapped_column(Integer, default=0)
+    rewards_after: Mapped[int] = mapped_column(Integer, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class BrandWalletDesign(UUIDTimestampMixin, Base):
@@ -204,6 +263,10 @@ class BrandWalletDesign(UUIDTimestampMixin, Base):
     card_title: Mapped[str] = mapped_column(String(120), default="بطاقة الولاء")
     logo_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     hero_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    background_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    strip_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    layout_style: Mapped[str] = mapped_column(String(30), default="classic")
+    overlay_opacity: Mapped[int] = mapped_column(Integer, default=25)
     barcode_format: Mapped[str] = mapped_column(String(40), default="PKBarcodeFormatQR")
     fields: Mapped[dict] = mapped_column(JSON, default=dict)
     terms: Mapped[str | None] = mapped_column(Text, nullable=True)

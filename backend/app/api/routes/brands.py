@@ -7,11 +7,12 @@ from app.api.deps import PLATFORM_ROLES, brand_access, current_user, require_pla
 from app.core.security import hash_password
 from app.db.session import get_db
 from app.models import (
-    AuditLog, Brand, BrandWalletDesign, Employee, LoyaltyProgram, MembershipTier,
+    AuditLog, Brand, BrandWalletDesign, Employee, LoyaltyProgram, MembershipTier, StampProgram,
     User, UserBrandAccess,
 )
-from app.schemas.common import BrandCreate, BrandUpdate
+from app.schemas.common import BrandCreate, BrandProgramProfileUpdate, BrandUpdate
 from app.services.audit import add_audit
+from app.services.capabilities import brand_capabilities, loyalty_program_type, normalized_mode
 
 router = APIRouter()
 
@@ -27,6 +28,13 @@ def serialize_brand(brand: Brand) -> dict:
         "currency": brand.currency,
         "timezone": brand.timezone,
         "locale": brand.locale,
+        "program_mode": normalized_mode(brand.program_mode),
+        "feature_flags": brand.feature_flags or {},
+        "capabilities": brand_capabilities(brand),
+        "join_enabled": brand.join_enabled,
+        "join_require_email": brand.join_require_email,
+        "join_welcome_text": brand.join_welcome_text,
+        "join_url": f"/join/{brand.slug}",
         "is_active": brand.is_active,
         "created_at": brand.created_at,
     }
@@ -67,18 +75,38 @@ async def create_brand(
         currency=payload.currency,
         timezone=payload.timezone,
         locale=payload.locale,
+        program_mode=payload.program_mode,
+        feature_flags=payload.feature_flags,
+        join_enabled=payload.join_enabled,
+        join_require_email=payload.join_require_email,
+        join_welcome_text=payload.join_welcome_text,
     )
     db.add(brand)
     await db.flush()
-    db.add(LoyaltyProgram(brand_id=brand.id))
+    capabilities = brand_capabilities(brand)
+    db.add(LoyaltyProgram(brand_id=brand.id, program_type=loyalty_program_type(brand.program_mode, capabilities)))
     db.add(BrandWalletDesign(
         brand_id=brand.id,
         background_color=payload.primary_color,
         label_color=payload.accent_color,
         logo_text=payload.name,
         card_title="بطاقة الولاء",
-        fields={"show_points": True, "show_stamps": True, "show_rewards": True, "show_tier": True, "show_visits": True},
+        fields={
+            "show_points": capabilities.get("points", False),
+            "show_stamps": capabilities.get("stamps", False),
+            "show_rewards": capabilities.get("rewards", False),
+            "show_tier": capabilities.get("tiers", False),
+            "show_visits": True,
+        },
     ))
+    if capabilities.get("stamps"):
+        db.add(StampProgram(
+            brand_id=brand.id, name="البطاقة الرئيسية", slug="main-card",
+            description="بطاقة الأختام الافتراضية", required_stamps=10,
+            reward_title="مكافأة مجانية", stamp_icon="coffee",
+            background_color=payload.primary_color, accent_color=payload.accent_color,
+            is_default=True, sort_order=0,
+        ))
     db.add_all([
         MembershipTier(brand_id=brand.id, name="برونزي", rank=0, color="#B7791F", min_points=0),
         MembershipTier(brand_id=brand.id, name="فضي", rank=1, color="#A0AEC0", min_points=500),
@@ -133,6 +161,60 @@ async def create_brand(
     await db.commit()
     await db.refresh(brand)
     return {"brand": serialize_brand(brand), "manager": manager_info}
+
+
+@router.patch("/{brand_id}/program-profile")
+async def update_program_profile(
+    brand_id: uuid.UUID,
+    payload: BrandProgramProfileUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(current_user),
+):
+    await brand_access(db, user, brand_id, permission="brand.manage")
+    brand = await db.get(Brand, brand_id)
+    if not brand:
+        raise HTTPException(404, "البراند غير موجود")
+    brand.program_mode = payload.program_mode
+    brand.feature_flags = payload.feature_flags
+    brand.join_enabled = payload.join_enabled
+    brand.join_require_email = payload.join_require_email
+    brand.join_welcome_text = payload.join_welcome_text
+    capabilities = brand_capabilities(brand)
+    program = await db.scalar(select(LoyaltyProgram).where(LoyaltyProgram.brand_id == brand_id))
+    if not program:
+        program = LoyaltyProgram(brand_id=brand_id)
+        db.add(program)
+    program.program_type = loyalty_program_type(brand.program_mode, capabilities)
+    design = await db.scalar(select(BrandWalletDesign).where(BrandWalletDesign.brand_id == brand_id))
+    if design:
+        fields = dict(design.fields or {})
+        fields.update({
+            "show_points": capabilities.get("points", False),
+            "show_stamps": capabilities.get("stamps", False),
+            "show_rewards": capabilities.get("rewards", False),
+            "show_tier": capabilities.get("tiers", False),
+        })
+        design.fields = fields
+        design.draft_version += 1
+    if capabilities.get("stamps"):
+        existing = await db.scalar(select(StampProgram).where(StampProgram.brand_id == brand_id))
+        if not existing:
+            db.add(StampProgram(
+                brand_id=brand_id, name="البطاقة الرئيسية", slug="main-card",
+                description="بطاقة الأختام الافتراضية", required_stamps=10,
+                reward_title="مكافأة مجانية", background_color=brand.primary_color,
+                accent_color=brand.accent_color, is_default=True,
+            ))
+    add_audit(
+        db, actor_id=user.id, action="brand_program_profile_updated", entity_type="brand",
+        entity_id=brand.id, brand_id=brand.id,
+        details={"program_mode": brand.program_mode, "feature_flags": brand.feature_flags},
+        ip_address=request.client.host if request.client else None,
+    )
+    await db.commit()
+    await db.refresh(brand)
+    return serialize_brand(brand)
 
 
 @router.get("/{brand_id}")

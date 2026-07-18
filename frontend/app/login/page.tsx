@@ -1,5 +1,24 @@
 'use client'
-import {useState} from 'react'; import {api} from '@/lib/api'; import {LockKeyhole} from 'lucide-react'
-export default function Login(){const [email,setEmail]=useState('admin@loyalyn.site'),[password,setPassword]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false)
- async function submit(e:React.FormEvent){e.preventDefault();setBusy(true);setError('');try{const d=await api('/api/auth/login',{method:'POST',body:JSON.stringify({email,password})});localStorage.setItem('loyalyn_token',d.access_token);location.href='/admin'}catch(e:any){setError(e.message)}finally{setBusy(false)}}
- return <main className="min-h-screen grid-bg grid place-items-center p-5"><form onSubmit={submit} className="glass w-full max-w-md rounded-[32px] p-8"><div className="w-14 h-14 rounded-2xl bg-lime-300 text-black grid place-items-center"><LockKeyhole/></div><h1 className="text-3xl font-black mt-6">دخول الإدارة</h1><p className="text-white/45 mt-2">أدخل بيانات حسابك الإداري للوصول إلى البراندات المصرح بها</p><label className="block mt-7 text-sm">البريد الإلكتروني<input className="input mt-2" value={email} onChange={e=>setEmail(e.target.value)}/></label><label className="block mt-4 text-sm">كلمة المرور<input type="password" className="input mt-2" value={password} onChange={e=>setPassword(e.target.value)}/></label>{error&&<p className="text-red-300 text-sm mt-4">{error}</p>}<button disabled={busy} className="btn-primary w-full mt-6">{busy?'جاري الدخول...':'دخول'}</button></form></main>}
+import {useState} from 'react'
+import {api} from '@/lib/api'
+import {LockKeyhole} from 'lucide-react'
+
+export default function Login(){
+  const [email,setEmail]=useState('admin@loyalyn.site')
+  const [password,setPassword]=useState('')
+  const [error,setError]=useState('')
+  const [busy,setBusy]=useState(false)
+  async function submit(e:React.FormEvent){
+    e.preventDefault();setBusy(true);setError('')
+    try{await api('/api/auth/login',{method:'POST',body:JSON.stringify({email,password})});localStorage.removeItem('loyalyn_token');location.href='/admin'}
+    catch(e:any){setError(e.message)}finally{setBusy(false)}
+  }
+  return <main className="login-page grid-bg"><form onSubmit={submit} className="login-card">
+    <div className="login-icon"><LockKeyhole/></div>
+    <div><p className="eyebrow">LOYALYN CONTROL CENTER</p><h1>دخول الإدارة</h1><p className="muted">أدخل بيانات حسابك للوصول إلى البراندات المصرح بها.</p></div>
+    <label className="field"><span>البريد الإلكتروني</span><input className="input" type="email" autoComplete="username" value={email} onChange={e=>setEmail(e.target.value)} required/></label>
+    <label className="field"><span>كلمة المرور</span><input type="password" className="input" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required/></label>
+    {error&&<p className="login-error" role="alert">{error}</p>}
+    <button disabled={busy} className="btn primary login-submit">{busy?'جاري الدخول...':'دخول'}</button>
+  </form></main>
+}

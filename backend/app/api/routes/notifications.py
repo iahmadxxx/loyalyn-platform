@@ -6,11 +6,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import brand_access, current_user
 from app.db.session import get_db
-from app.models import Branch, Customer, Notification, NotificationCampaign, NotificationRecipient, NotificationTemplate
+from app.models import Brand, Branch, Customer, Notification, NotificationCampaign, NotificationRecipient, NotificationTemplate
 from app.schemas.common import CampaignCreate, CampaignUpdate, NotificationTemplateCreate
 from app.services.audit import add_audit
+from app.services.capabilities import brand_capabilities
 
 router = APIRouter()
+
+async def require_campaigns(db: AsyncSession, brand_id: uuid.UUID) -> Brand:
+    brand = await db.get(Brand, brand_id)
+    if not brand or not brand.is_active:
+        raise HTTPException(404, "البراند غير موجود أو موقوف")
+    if not brand_capabilities(brand).get("campaigns"):
+        raise HTTPException(409, "ميزة الإشعارات والحملات غير مفعلة لهذا البراند")
+    return brand
+
 
 
 async def validate_audience(
@@ -66,6 +76,7 @@ def campaign_out(x: NotificationCampaign) -> dict:
 @router.get("/templates")
 async def list_templates(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, brand_id, permission="campaigns.view")
+    await require_campaigns(db, brand_id)
     rows = list((await db.scalars(select(NotificationTemplate).where(NotificationTemplate.brand_id == brand_id).order_by(NotificationTemplate.created_at.desc()))).all())
     return [{"id": str(x.id), "name": x.name, "title": x.title, "body": x.body, "channel": x.channel, "is_active": x.is_active} for x in rows]
 
@@ -73,6 +84,7 @@ async def list_templates(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 @router.post("/templates", status_code=201)
 async def create_template(payload: NotificationTemplateCreate, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, payload.brand_id, permission="campaigns.manage")
+    await require_campaigns(db, payload.brand_id)
     template = NotificationTemplate(**payload.model_dump())
     db.add(template)
     await db.flush()
@@ -88,6 +100,7 @@ async def toggle_template(template_id: uuid.UUID, db: AsyncSession = Depends(get
     if not template:
         raise HTTPException(404, "القالب غير موجود")
     await brand_access(db, user, template.brand_id, permission="campaigns.manage")
+    await require_campaigns(db, template.brand_id)
     template.is_active = not template.is_active
     await db.commit()
     return {"ok": True, "is_active": template.is_active}
@@ -96,6 +109,7 @@ async def toggle_template(template_id: uuid.UUID, db: AsyncSession = Depends(get
 @router.get("/campaigns")
 async def list_campaigns(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, brand_id, permission="campaigns.view")
+    await require_campaigns(db, brand_id)
     rows = list((await db.scalars(select(NotificationCampaign).where(NotificationCampaign.brand_id == brand_id).order_by(NotificationCampaign.created_at.desc()).limit(300))).all())
     return [campaign_out(x) for x in rows]
 
@@ -103,6 +117,7 @@ async def list_campaigns(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db)
 @router.post("/campaigns", status_code=201)
 async def create_campaign(payload: CampaignCreate, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, payload.brand_id, permission="campaigns.manage")
+    await require_campaigns(db, payload.brand_id)
     audience_filter = await validate_audience(
         db, payload.brand_id, payload.audience_type, payload.audience_filter
     )
@@ -137,6 +152,7 @@ async def update_campaign(campaign_id: uuid.UUID, payload: CampaignUpdate, reque
     if not campaign:
         raise HTTPException(404, "الحملة غير موجودة")
     await brand_access(db, user, campaign.brand_id, permission="campaigns.manage")
+    await require_campaigns(db, campaign.brand_id)
     if campaign.status not in {"draft", "scheduled"}:
         raise HTTPException(409, "لا يمكن تعديل حملة بدأ إرسالها")
     data = payload.model_dump(exclude_unset=True)
@@ -162,6 +178,7 @@ async def send_campaign(campaign_id: uuid.UUID, request: Request, db: AsyncSessi
     if not campaign:
         raise HTTPException(404, "الحملة غير موجودة")
     await brand_access(db, user, campaign.brand_id, permission="campaigns.manage")
+    await require_campaigns(db, campaign.brand_id)
     if campaign.status in {"processing", "completed", "cancelled"}:
         raise HTTPException(409, "حالة الحملة لا تسمح بالإرسال")
     if campaign.status in {"failed", "partially_completed"}:
@@ -186,6 +203,7 @@ async def cancel_campaign(campaign_id: uuid.UUID, request: Request, db: AsyncSes
     if not campaign:
         raise HTTPException(404, "الحملة غير موجودة")
     await brand_access(db, user, campaign.brand_id, permission="campaigns.manage")
+    await require_campaigns(db, campaign.brand_id)
     if campaign.status in {"completed", "partially_completed", "cancelled"}:
         return campaign_out(campaign)
     campaign.status = "cancelled"
@@ -200,6 +218,7 @@ async def campaign_recipients(campaign_id: uuid.UUID, db: AsyncSession = Depends
     if not campaign:
         raise HTTPException(404, "الحملة غير موجودة")
     await brand_access(db, user, campaign.brand_id, permission="campaigns.view")
+    await require_campaigns(db, campaign.brand_id)
     rows = (await db.execute(
         select(NotificationRecipient, Customer)
         .join(Customer, Customer.id == NotificationRecipient.customer_id)

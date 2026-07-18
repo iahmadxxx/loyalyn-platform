@@ -1,0 +1,21 @@
+'use client'
+import {useEffect,useState} from 'react'
+import {useParams} from 'next/navigation'
+import {API} from '@/lib/api'
+import {CheckCircle2,Loader2,WalletCards} from 'lucide-react'
+
+export default function BrandJoin(){
+  const params=useParams<{slug:string}>()
+  const [profile,setProfile]=useState<any>(null)
+  const [selected,setSelected]=useState<string[]>([])
+  const [result,setResult]=useState<any>(null)
+  const [busy,setBusy]=useState(false)
+  const [error,setError]=useState('')
+  useEffect(()=>{fetch(`${API}/api/public/brands/${params.slug}`,{cache:'no-store'}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.detail||'صفحة التسجيل غير متاحة');setProfile(d);setSelected(d.programs.map((x:any)=>x.id))}).catch(e=>setError(e.message))},[params.slug])
+  async function submit(e:React.FormEvent<HTMLFormElement>){e.preventDefault();setBusy(true);setError('');const fd=new FormData(e.currentTarget);try{const response=await fetch(`${API}/api/public/brands/${params.slug}/join`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:fd.get('name'),phone:fd.get('phone'),email:fd.get('email')||null,birthday:fd.get('birthday')||null,selected_program_ids:selected})});const data=await response.json();if(!response.ok)throw new Error(Array.isArray(data.detail)?data.detail.map((x:any)=>x.msg).join('، '):data.detail||'تعذر التسجيل');setResult(data)}catch(e:any){setError(e.message)}finally{setBusy(false)}}
+  if(error&&!profile)return <main className="join-page grid-bg"><div className="warning-box"><h1>تعذر فتح التسجيل</h1><p>{error}</p></div></main>
+  if(!profile)return <main className="join-page grid-bg"><Loader2 className="animate-spin"/></main>
+  const brand=profile.brand
+  if(result)return <main className="join-page grid-bg"><section className="join-shell"><div className="join-success"><CheckCircle2/><h1>تم تسجيل بطاقتك</h1><p>احتفظ بهذا الرمز؛ الموظف يمسحه ويضيف الختم مباشرة.</p><img src={`${API}/api/public/members/${result.customer.membership_code}/qr.svg`} alt="رمز العضوية"/><code>{result.customer.membership_code}</code><div className="public-card-actions">{result.download_url&&<a className="btn primary" href={result.download_url}><WalletCards size={18}/>إضافة إلى Apple Wallet</a>}<button type="button" className="btn secondary" onClick={()=>location.reload()}>تسجيل عميل آخر</button></div></div></section></main>
+  return <main className="join-page grid-bg"><section className="join-shell"><header className="join-brand" style={{borderColor:brand.accent_color}}><div className="brand-mark large" style={{background:brand.primary_color,color:brand.accent_color}}>{brand.name[0]}</div><div><small>LOYALYN MEMBER</small><h1>{brand.name}</h1><p>{brand.join_welcome_text}</p></div></header>{error&&<div className="inline-error">{error}</div>}<form className="join-form" onSubmit={submit}><label><span>الاسم</span><input name="name" required minLength={2} placeholder="اسم العميل"/></label><label><span>رقم الجوال</span><input name="phone" required minLength={5} inputMode="tel" placeholder="مثال: 55555555"/></label><label><span>البريد الإلكتروني {brand.join_require_email?'':'(اختياري)'}</span><input name="email" type="email" required={brand.join_require_email}/></label><label><span>تاريخ الميلاد (اختياري)</span><input name="birthday" type="date"/></label>{profile.programs.length>0&&<div className="join-programs"><b>البطاقات التي ستظهر لك</b>{profile.programs.map((x:any)=><label className={`join-program ${selected.includes(x.id)?'selected':''}`} key={x.id} style={{borderColor:selected.includes(x.id)?x.accent_color:undefined}}><input type="checkbox" checked={selected.includes(x.id)} onChange={()=>setSelected((current)=>current.includes(x.id)?current.filter(id=>id!==x.id):[...current,x.id])}/><span className="join-program-icon">{({coffee:'☕',cake:'🍰',cookie:'🍪',cup:'🥤',star:'★'} as any)[x.stamp_icon]||'●'}</span><span><b>{x.name}</b><small>{x.required_stamps} أختام — {x.reward_title}</small></span></label>)}</div>}<button className="btn primary join-submit" disabled={busy}>{busy?<Loader2 className="animate-spin"/>:<WalletCards/>}<span>{busy?'جاري إنشاء البطاقة...':'إنشاء بطاقتي'}</span></button><p className="join-privacy">بالتسجيل توافق على حفظ بيانات العضوية لدى البراند فقط.</p></form></section></main>
+}

@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 
-DB = "/tmp/loyalyn-v3-qa.db"
+DB = "/tmp/loyalyn-v41-qa.db"
 Path(DB).unlink(missing_ok=True)
 os.environ.update({
     "DATABASE_URL": f"sqlite+aiosqlite:///{DB}",
@@ -19,7 +19,7 @@ os.environ.update({
     "BOOTSTRAP_ADMIN_PASSWORD": "OwnerPass123!",
     "JWT_SECRET": "x" * 64,
     "ENCRYPTION_KEY": "y" * 64,
-    "WALLET_STORAGE_DIR": "/tmp/loyalyn-v3-wallet-qa",
+    "WALLET_STORAGE_DIR": "/tmp/loyalyn-v41-wallet-qa",
     "PUBLIC_API_URL": "https://api.example.com",
     "PUBLIC_WEB_URL": "https://app.example.com",
 })
@@ -71,6 +71,7 @@ async def main():
             first = await request(client, "POST", "/api/brands", token=owner, expected=201, json={
                 "name": "Coffee House", "slug": "coffee-house", "primary_color": "#111827",
                 "accent_color": "#C6FF4A", "currency": "QAR", "timezone": "Asia/Qatar", "locale": "ar",
+                "program_mode": "custom", "feature_flags": {"stamps": True, "multi_stamp_cards": False, "fast_scan": True, "points": True, "cashback": True, "tiers": True, "rewards": True, "coupons": True, "wallet": True, "campaigns": True},
                 "manager_name": "Brand Manager", "manager_email": "manager@example.com",
                 "manager_password": "ManagerPass123!",
             })
@@ -107,7 +108,14 @@ async def main():
                 "email": "cashier@example.com", "role": "employee", "password": "CashierPass123!", "permissions": {},
             })
             cashier = await login(client, "cashier@example.com", "CashierPass123!")
+            staff_rows = await request(client, "GET", f"/api/management/staff?brand_id={brand_id}", token=manager)
+            cashier_row = next(row for row in staff_rows if row["id"] == employee["id"])
+            assert cashier_row["effective_permissions"]["customers.create"] is True
+            assert cashier_row["effective_permissions"].get("customers.edit", False) is False
+            assert cashier_row["effective_permissions"].get("loyalty.manual", False) is False
             await request(client, "GET", f"/api/management/staff?brand_id={brand_id}", token=cashier, expected=403)
+            branch_options = await request(client, "GET", f"/api/management/branch-options?brand_id={brand_id}", token=cashier)
+            assert len(branch_options) == 1 and branch_options[0]["id"] == branch["id"]
 
             await request(client, "POST", "/api/customers", token=manager, expected=400, json={
                 "brand_id": brand_id, "home_branch_id": other_branch["id"],
@@ -122,6 +130,22 @@ async def main():
             second_customer = await request(client, "POST", "/api/customers", token=manager, expected=201, json={
                 "brand_id": brand_id, "name": "Mona", "phone": "55567890", "email": "mona@example.com",
             })
+            employee_customer = await request(client, "POST", "/api/customers", token=cashier, expected=201, json={
+                "brand_id": brand_id, "name": "Branch Customer", "phone": "55522222",
+            })
+            assert employee_customer["home_branch_id"] == branch["id"]
+            await request(client, "POST", "/api/customers", token=cashier, expected=403, json={
+                "brand_id": brand_id, "home_branch_id": other_branch["id"], "name": "Wrong Employee Branch", "phone": "55533333",
+            })
+            await request(client, "PATCH", f"/api/customers/{employee_customer['id']}", token=cashier, expected=403, json={
+                "home_branch_id": other_branch["id"],
+            })
+            await request(client, "PATCH", f"/api/customers/{employee_customer['id']}", token=manager, json={"is_active": False})
+            # Branch-scoped employee does not receive the full customer list and gets a privacy-limited search result.
+            assert await request(client, "GET", f"/api/customers?brand_id={brand_id}&active_only=false", token=cashier) == []
+            cashier_search = await request(client, "GET", f"/api/customers?brand_id={brand_id}&active_only=false&q=Ahmed", token=cashier)
+            assert len(cashier_search) == 1 and cashier_search[0]["id"] == customer_id
+            assert "email" not in cashier_search[0] and "notes" not in cashier_search[0] and "total_spend" not in cashier_search[0]
             await request(client, "PUT", f"/api/customers/program/{brand_id}", token=manager, json={
                 "enabled": True, "program_type": "hybrid", "points_per_visit": 10,
                 "points_per_currency": 2, "required_stamps": 2, "stamp_reward_title": "Free Coffee",
@@ -131,8 +155,14 @@ async def main():
                 "rules": {"auto_convert_points": False, "global_multiplier": 1},
             })
 
+            # Cashiers can apply ordinary loyalty events but not arbitrary manual balance changes.
+            await request(client, "POST", f"/api/customers/{customer_id}/loyalty", token=cashier, expected=403, json={
+                "action": "manual", "branch_id": branch["id"], "amount": 0, "points": 500,
+                "stamps": 0, "idempotency_key": "manual-denied-0001",
+            })
+
             # Cross-brand branch is rejected even for an otherwise authorized actor.
-            await request(client, "POST", f"/api/customers/{customer_id}/loyalty", token=cashier, expected=400, json={
+            await request(client, "POST", f"/api/customers/{customer_id}/loyalty", token=cashier, expected=403, json={
                 "action": "visit", "branch_id": other_branch["id"], "amount": 0, "points": 0,
                 "stamps": 0, "idempotency_key": "cross-branch-0001",
             })
@@ -252,10 +282,25 @@ async def main():
             audit = await request(client, "GET", f"/api/management/audit?brand_id={brand_id}", token=manager)
             assert len(audit) >= 10
 
+            # Explicit false values can revoke role defaults; unchecked permission boxes are not ignored.
+            restricted = {"customers.view": True, "fast_scan.use": True, "customers.create": False, "loyalty.apply": False}
+            await request(client, "PATCH", f"/api/management/staff/{employee['id']}", token=manager, json={"permissions": restricted})
+            await request(client, "POST", "/api/customers", token=cashier, expected=403, json={
+                "brand_id": brand_id, "name": "Denied Create", "phone": "55544444",
+            })
+            await request(client, "POST", f"/api/customers/{customer_id}/loyalty", token=cashier, expected=403, json={
+                "action": "visit", "branch_id": branch["id"], "amount": 0, "points": 0,
+                "stamps": 0, "idempotency_key": "revoked-visit-0001",
+            })
+            await request(client, "PATCH", f"/api/management/staff/{employee['id']}", token=manager, json={"password": "CashierPass456!"})
+            await request(client, "GET", f"/api/management/branch-options?brand_id={brand_id}", token=cashier, expected=401)
+            await request(client, "POST", "/api/auth/login", expected=401, json={"email": "cashier@example.com", "password": "CashierPass123!"})
+            await login(client, "cashier@example.com", "CashierPass456!")
+
             print(json.dumps({
                 "ok": True, "brands": 2, "manager_brand_access": 2, "customer": customer_id,
                 "coupon": coupon["code"], "campaign": campaign["status"], "audit_entries": len(audit),
-                "security_checks": ["tenant_isolation", "central_wallet_forbidden", "password_preserved", "cross_branch_rejected", "campaign_audience_isolation"],
+                "version": "4.1.0", "security_checks": ["tenant_isolation", "central_wallet_forbidden", "password_preserved", "cross_branch_rejected", "employee_branch_scope", "employee_customer_privacy", "permission_revocation", "password_session_revocation", "campaign_audience_isolation"],
             }, ensure_ascii=False))
 
 

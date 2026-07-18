@@ -5,11 +5,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Loyalyn"
-    app_version: str = "3.0.0"
+    app_version: str = "4.1.0"
     environment: str = "production"
     database_url: str = "postgresql+asyncpg://loyalyn:change_me@db:5432/loyalyn"
     jwt_secret: str = "replace_me_with_a_long_random_secret"
-    jwt_expire_minutes: int = 10080
+    jwt_expire_minutes: int = 30
+    refresh_expire_days: int = 30
+    cookie_domain: str = ".loyalyn.site"
     encryption_key: str = ""
     bootstrap_admin_email: str = "admin@loyalyn.site"
     bootstrap_admin_password: str = "ChangeMe123!"

@@ -12,15 +12,25 @@ from app.core.config import get_settings
 from app.core.security import encrypt_secret
 from app.db.session import get_db
 from app.models import (
-    Brand, BrandWalletDesign, Customer, PlatformWalletCredential, WalletDevice,
+    Brand, BrandWalletDesign, Customer, CustomerStampCard, PlatformWalletCredential, StampProgram, WalletDevice,
     WalletPass, WalletRegistration,
 )
 from app.schemas.common import WalletDesignUpdate, WalletPushToken
 from app.services.audit import add_audit
+from app.services.capabilities import brand_capabilities
 from app.services.wallet import active_credential, generate_pkpass_bytes, validate_and_extract_certificate
 
 router = APIRouter()
 settings = get_settings()
+
+
+async def require_wallet_feature(db: AsyncSession, brand_id: uuid.UUID) -> Brand:
+    brand = await db.get(Brand, brand_id)
+    if not brand or not brand.is_active:
+        raise HTTPException(404, "البراند غير موجود أو موقوف")
+    if not brand_capabilities(brand).get("wallet"):
+        raise HTTPException(409, "ميزة Apple Wallet غير مفعلة لهذا البراند")
+    return brand
 
 
 def credential_out(x: PlatformWalletCredential | None) -> dict:
@@ -40,7 +50,9 @@ def design_out(x: BrandWalletDesign) -> dict:
         "id": str(x.id), "brand_id": str(x.brand_id), "background_color": x.background_color,
         "foreground_color": x.foreground_color, "label_color": x.label_color,
         "logo_text": x.logo_text, "card_title": x.card_title, "logo_url": x.logo_url,
-        "hero_url": x.hero_url, "barcode_format": x.barcode_format, "fields": x.fields or {},
+        "hero_url": x.hero_url, "background_image_url": x.background_image_url,
+        "strip_url": x.strip_url, "layout_style": x.layout_style, "overlay_opacity": x.overlay_opacity,
+        "barcode_format": x.barcode_format, "fields": x.fields or {},
         "terms": x.terms, "draft_version": x.draft_version, "published_version": x.published_version,
         "is_published": x.is_published, "updated_at": x.updated_at,
     }
@@ -63,6 +75,22 @@ async def pass_entities(db: AsyncSession, wallet_pass: WalletPass):
     customer = await db.get(Customer, wallet_pass.customer_id)
     brand = await db.get(Brand, wallet_pass.brand_id)
     design = await ensure_design(db, brand)
+    stamp_rows = (await db.execute(
+        select(CustomerStampCard, StampProgram)
+        .join(StampProgram, StampProgram.id == CustomerStampCard.stamp_program_id)
+        .where(
+            CustomerStampCard.customer_id == customer.id,
+            CustomerStampCard.is_active.is_(True),
+            StampProgram.is_active.is_(True),
+        )
+        .order_by(StampProgram.sort_order, StampProgram.created_at)
+    )).all()
+    customer._wallet_stamp_cards = [
+        {
+            "id": str(program.id), "name": program.name, "stamps": card.stamps,
+            "required_stamps": program.required_stamps, "rewards_available": card.rewards_available,
+        } for card, program in stamp_rows
+    ]
     credential = await active_credential(db)
     if not credential:
         raise HTTPException(503, "شهادة Apple Wallet المركزية غير مهيأة")
@@ -158,7 +186,8 @@ async def upload_design_asset(
     user=Depends(current_user),
 ):
     await brand_access(db, user, brand_id, permission="wallet.design")
-    if kind not in {"logo", "hero"}:
+    await require_wallet_feature(db, brand_id)
+    if kind not in {"logo", "hero", "background", "strip"}:
         raise HTTPException(400, "نوع الأصل غير صحيح")
     if not file.filename or not file.filename.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
         raise HTTPException(400, "الصورة يجب أن تكون PNG أو JPG أو WebP")
@@ -183,8 +212,12 @@ async def upload_design_asset(
     value = f"storage://{destination}"
     if kind == "logo":
         design.logo_url = value
-    else:
+    elif kind == "hero":
         design.hero_url = value
+    elif kind == "background":
+        design.background_image_url = value
+    else:
+        design.strip_url = value
     design.draft_version += 1
     await db.commit()
     return {"ok": True, "kind": kind, "preview_url": f"{settings.public_api_url.rstrip('/')}/api/wallet/public/assets/{brand_id}/{kind}"}
@@ -192,10 +225,15 @@ async def upload_design_asset(
 
 @router.get("/public/assets/{brand_id}/{kind}")
 async def public_design_asset(brand_id: uuid.UUID, kind: str, db: AsyncSession = Depends(get_db)):
-    if kind not in {"logo", "hero"}:
+    if kind not in {"logo", "hero", "background", "strip"}:
         raise HTTPException(404, "Asset not found")
     design = await db.scalar(select(BrandWalletDesign).where(BrandWalletDesign.brand_id == brand_id))
-    source = design.logo_url if design and kind == "logo" else design.hero_url if design else None
+    source = None
+    if design:
+        source = {
+            "logo": design.logo_url, "hero": design.hero_url,
+            "background": design.background_image_url, "strip": design.strip_url,
+        }.get(kind)
     if not source or not source.startswith("storage://"):
         raise HTTPException(404, "Asset not found")
     path = Path(source.removeprefix("storage://"))
@@ -207,6 +245,7 @@ async def public_design_asset(brand_id: uuid.UUID, kind: str, db: AsyncSession =
 @router.get("/design/{brand_id}")
 async def get_design(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, brand_id, permission="wallet.view")
+    await require_wallet_feature(db, brand_id)
     brand = await db.get(Brand, brand_id)
     if not brand:
         raise HTTPException(404, "البراند غير موجود")
@@ -216,6 +255,7 @@ async def get_design(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), us
 @router.put("/design/{brand_id}")
 async def update_design(brand_id: uuid.UUID, payload: WalletDesignUpdate, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, brand_id, permission="wallet.design")
+    await require_wallet_feature(db, brand_id)
     brand = await db.get(Brand, brand_id)
     if not brand:
         raise HTTPException(404, "البراند غير موجود")
@@ -232,6 +272,7 @@ async def update_design(brand_id: uuid.UUID, payload: WalletDesignUpdate, reques
 @router.post("/design/{brand_id}/publish")
 async def publish_design(brand_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, brand_id, permission="wallet.design")
+    await require_wallet_feature(db, brand_id)
     brand = await db.get(Brand, brand_id)
     if not brand:
         raise HTTPException(404, "البراند غير موجود")
@@ -255,6 +296,7 @@ async def issue_pass(customer_id: uuid.UUID, request: Request, db: AsyncSession 
     if not customer:
         raise HTTPException(404, "العميل غير موجود")
     await brand_access(db, user, customer.brand_id, permission="wallet.issue")
+    await require_wallet_feature(db, customer.brand_id)
     credential = await active_credential(db)
     if not credential:
         raise HTTPException(409, "شهادة Apple Wallet المركزية غير مهيأة")
@@ -313,9 +355,16 @@ async def public_card(token: str, db: AsyncSession = Depends(get_db)):
     customer = await db.get(Customer, wallet_pass.customer_id)
     brand = await db.get(Brand, wallet_pass.brand_id)
     design = await ensure_design(db, brand)
+    stamp_rows = (await db.execute(
+        select(CustomerStampCard, StampProgram)
+        .join(StampProgram, StampProgram.id == CustomerStampCard.stamp_program_id)
+        .where(CustomerStampCard.customer_id == customer.id, CustomerStampCard.is_active.is_(True), StampProgram.is_active.is_(True))
+        .order_by(StampProgram.sort_order, StampProgram.created_at)
+    )).all()
     return {
-        "brand": {"name": brand.name, "logo_url": brand.logo_url, "primary_color": brand.primary_color, "accent_color": brand.accent_color},
+        "brand": {"name": brand.name, "slug": brand.slug, "logo_url": brand.logo_url, "primary_color": brand.primary_color, "accent_color": brand.accent_color, "program_mode": brand.program_mode},
         "customer": {"name": customer.name, "points": customer.points, "stamps": customer.stamps, "rewards": customer.available_rewards, "tier": customer.tier, "membership_code": customer.membership_code},
+        "stamp_cards": [{"id": str(program.id), "name": program.name, "stamps": card.stamps, "required_stamps": program.required_stamps, "rewards_available": card.rewards_available, "background_color": program.background_color, "accent_color": program.accent_color, "stamp_icon": program.stamp_icon} for card, program in stamp_rows],
         "design": design_out(design),
         "download_url": f"{settings.public_api_url.rstrip('/')}/api/wallet/public/{wallet_pass.public_token}.pkpass",
     }

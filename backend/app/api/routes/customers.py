@@ -5,14 +5,15 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.api.deps import brand_access, current_user
+from app.api.deps import PLATFORM_ROLES, brand_access, current_user, effective_permissions, operational_branch
 from app.db.session import get_db
-from app.models import Branch, Coupon, CouponRedemption, Customer, LoyaltyProgram, LoyaltyTransaction, Reward, WalletPass
+from app.models import Brand, Branch, Coupon, CouponRedemption, Customer, CustomerStampCard, LoyaltyProgram, LoyaltyTransaction, Reward, StampProgram, WalletPass
 from app.schemas.common import (
     CouponRedeem, CustomerCreate, CustomerUpdate, EarnedRewardRedeem, LoyaltyApply,
     LoyaltyProgramUpdate, RewardRedeem, TransactionReverse,
 )
 from app.services.audit import add_audit
+from app.services.capabilities import brand_capabilities, loyalty_program_type
 from app.services.loyalty import apply_loyalty, consume_point_buckets, program_dict, recalculate_tier
 from app.services.wallet import push_pass_update
 
@@ -33,8 +34,8 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def customer_out(customer: Customer) -> dict:
-    return {
+def customer_out(customer: Customer, *, limited: bool = False) -> dict:
+    data = {
         "id": str(customer.id), "brand_id": str(customer.brand_id),
         "home_branch_id": str(customer.home_branch_id) if customer.home_branch_id else None, "name": customer.name,
         "phone": customer.phone, "email": customer.email, "birthday": customer.birthday,
@@ -44,6 +45,10 @@ def customer_out(customer: Customer) -> dict:
         "last_visit_at": customer.last_visit_at, "tags": customer.tags or [], "notes": customer.notes,
         "is_active": customer.is_active, "created_at": customer.created_at,
     }
+    if limited:
+        for key in ("email", "birthday", "tags", "notes", "total_spend"):
+            data.pop(key, None)
+    return data
 
 
 def transaction_out(tx: LoyaltyTransaction) -> dict:
@@ -65,27 +70,42 @@ async def list_customers(
     db: AsyncSession = Depends(get_db),
     user=Depends(current_user),
 ):
-    await brand_access(db, user, brand_id, permission="customers.view")
+    access = await brand_access(db, user, brand_id, permission="customers.view")
+    role = "platform_owner" if user.role in PLATFORM_ROLES else (access.role if access else user.role)
+    permissions = {"*": True} if role == "platform_owner" else effective_permissions(role, access.permissions if access else {})
+    limited = not permissions.get("*", False) and not permissions.get("customers.list", False)
+    if limited and (not q or len(q.strip()) < 2):
+        return []
     query = select(Customer).where(Customer.brand_id == brand_id)
     if active_only:
         query = query.where(Customer.is_active.is_(True))
     if q:
         term = f"%{q.strip()}%"
-        query = query.where(or_(Customer.name.ilike(term), Customer.phone.ilike(term), Customer.email.ilike(term)))
-    rows = list((await db.scalars(query.order_by(Customer.created_at.desc()).limit(1000))).all())
-    return [customer_out(x) for x in rows]
+        fields = [Customer.name.ilike(term), Customer.phone.ilike(term), Customer.membership_code.ilike(term)]
+        if not limited:
+            fields.append(Customer.email.ilike(term))
+        query = query.where(or_(*fields))
+    rows = list((await db.scalars(query.order_by(Customer.created_at.desc()).limit(25 if limited else 1000))).all())
+    return [customer_out(x, limited=limited) for x in rows]
 
 
 @router.post("", status_code=201)
 async def create_customer(payload: CustomerCreate, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
-    await brand_access(db, user, payload.brand_id, permission="customers.manage")
-    await ensure_branch(db, payload.home_branch_id, payload.brand_id)
+    access = await brand_access(db, user, payload.brand_id, permission="customers.create")
+    data = payload.model_dump()
+    data["home_branch_id"] = operational_branch(access, payload.home_branch_id)
+    await ensure_branch(db, data["home_branch_id"], payload.brand_id)
     existing = await db.scalar(select(Customer).where(Customer.brand_id == payload.brand_id, Customer.phone == payload.phone))
     if existing:
         raise HTTPException(409, "يوجد عميل بنفس رقم الهاتف داخل هذا البراند")
-    customer = Customer(**payload.model_dump(), membership_code=secrets.token_urlsafe(18))
+    customer = Customer(**data, membership_code=secrets.token_urlsafe(18))
     db.add(customer)
     await db.flush()
+    brand = await db.get(Brand, payload.brand_id)
+    if brand and brand_capabilities(brand).get("stamps"):
+        programs = list((await db.scalars(select(StampProgram).where(StampProgram.brand_id == payload.brand_id, StampProgram.is_active.is_(True)))).all())
+        for stamp_program in programs:
+            db.add(CustomerStampCard(brand_id=payload.brand_id, customer_id=customer.id, stamp_program_id=stamp_program.id))
     add_audit(db, actor_id=user.id, action="customer_created", entity_type="customer", entity_id=customer.id, brand_id=payload.brand_id, details={"name": customer.name, "phone": customer.phone}, ip_address=request.client.host if request.client else None)
     await db.commit()
     await db.refresh(customer)
@@ -97,8 +117,11 @@ async def get_customer(customer_id: uuid.UUID, db: AsyncSession = Depends(get_db
     customer = await db.get(Customer, customer_id)
     if not customer:
         raise HTTPException(404, "العميل غير موجود")
-    await brand_access(db, user, customer.brand_id, permission="customers.view")
-    return customer_out(customer)
+    access = await brand_access(db, user, customer.brand_id, permission="customers.view")
+    role = "platform_owner" if user.role in PLATFORM_ROLES else (access.role if access else user.role)
+    permissions = {"*": True} if role == "platform_owner" else effective_permissions(role, access.permissions if access else {})
+    limited = not any(permissions.get(key, False) for key in ("*", "customers.list", "customers.edit", "customers.history"))
+    return customer_out(customer, limited=limited)
 
 
 @router.patch("/{customer_id}")
@@ -106,9 +129,10 @@ async def update_customer(customer_id: uuid.UUID, payload: CustomerUpdate, reque
     customer = await db.get(Customer, customer_id)
     if not customer:
         raise HTTPException(404, "العميل غير موجود")
-    await brand_access(db, user, customer.brand_id, permission="customers.manage")
+    access = await brand_access(db, user, customer.brand_id, permission="customers.edit")
     data = payload.model_dump(exclude_unset=True)
     if "home_branch_id" in data:
+        data["home_branch_id"] = operational_branch(access, data["home_branch_id"])
         await ensure_branch(db, data["home_branch_id"], customer.brand_id)
     if "phone" in data:
         duplicate = await db.scalar(select(Customer).where(Customer.brand_id == customer.brand_id, Customer.phone == data["phone"], Customer.id != customer.id))
@@ -127,14 +151,14 @@ async def customer_ledger(customer_id: uuid.UUID, db: AsyncSession = Depends(get
     customer = await db.get(Customer, customer_id)
     if not customer:
         raise HTTPException(404, "العميل غير موجود")
-    await brand_access(db, user, customer.brand_id, permission="customers.view")
+    await brand_access(db, user, customer.brand_id, permission="customers.history")
     rows = list((await db.scalars(select(LoyaltyTransaction).where(LoyaltyTransaction.customer_id == customer_id).order_by(LoyaltyTransaction.created_at.desc()).limit(500))).all())
     return [transaction_out(x) for x in rows]
 
 
 @router.get("/program/{brand_id}")
 async def get_program(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
-    await brand_access(db, user, brand_id, permission="loyalty.view")
+    await brand_access(db, user, brand_id, permission="loyalty.manage")
     program = await db.scalar(select(LoyaltyProgram).where(LoyaltyProgram.brand_id == brand_id))
     if not program:
         program = LoyaltyProgram(brand_id=brand_id)
@@ -147,6 +171,15 @@ async def get_program(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), u
 @router.put("/program/{brand_id}")
 async def update_program(brand_id: uuid.UUID, payload: LoyaltyProgramUpdate, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, brand_id, permission="loyalty.manage")
+    brand = await db.get(Brand, brand_id)
+    if not brand:
+        raise HTTPException(404, "البراند غير موجود")
+    capabilities = brand_capabilities(brand)
+    expected_type = loyalty_program_type(brand.program_mode, capabilities)
+    if brand.program_mode != "custom" and payload.program_type != expected_type:
+        raise HTTPException(409, "نوع برنامج الولاء مرتبط بإعدادات البراند. غيّره من إعدادات نوع البرنامج.")
+    if payload.cashback_percent and not capabilities.get("cashback"):
+        raise HTTPException(409, "ميزة Cashback غير مفعلة لهذا البراند")
     program = await db.scalar(select(LoyaltyProgram).where(LoyaltyProgram.brand_id == brand_id))
     if not program:
         program = LoyaltyProgram(brand_id=brand_id)
@@ -164,8 +197,20 @@ async def apply_customer_loyalty(customer_id: uuid.UUID, payload: LoyaltyApply, 
     customer = await db.scalar(select(Customer).where(Customer.id == customer_id).with_for_update())
     if not customer:
         raise HTTPException(404, "العميل غير موجود")
-    await brand_access(db, user, customer.brand_id, permission="loyalty.apply")
-    await ensure_branch(db, payload.branch_id, customer.brand_id)
+    permission = "loyalty.manual" if payload.action == "manual" else "loyalty.apply"
+    access = await brand_access(db, user, customer.brand_id, permission=permission)
+    branch_id = operational_branch(access, payload.branch_id)
+    brand = await db.get(Brand, customer.brand_id)
+    capabilities = brand_capabilities(brand) if brand else {}
+    if capabilities.get("multi_stamp_cards") and payload.action in {"visit", "spend"} and not capabilities.get("points"):
+        raise HTTPException(409, "استخدم السكان السريع واختر بطاقة الأختام المطلوبة")
+    if capabilities.get("multi_stamp_cards") and payload.stamps:
+        raise HTTPException(409, "الأختام تُضاف إلى بطاقة محددة من السكان السريع")
+    if payload.points and not capabilities.get("points"):
+        raise HTTPException(409, "ميزة النقاط غير مفعلة لهذا البراند")
+    if payload.stamps and not capabilities.get("stamps"):
+        raise HTTPException(409, "ميزة الأختام غير مفعلة لهذا البراند")
+    await ensure_branch(db, branch_id, customer.brand_id)
     program = await db.scalar(select(LoyaltyProgram).where(LoyaltyProgram.brand_id == customer.brand_id))
     if not program:
         program = LoyaltyProgram(brand_id=customer.brand_id)
@@ -174,7 +219,7 @@ async def apply_customer_loyalty(customer_id: uuid.UUID, payload: LoyaltyApply, 
     try:
         transaction, duplicate = await apply_loyalty(
             db, customer, program, actor_id=user.id, action=payload.action,
-            branch_id=payload.branch_id, amount=payload.amount, points=payload.points,
+            branch_id=branch_id, amount=payload.amount, points=payload.points,
             stamps=payload.stamps, note=payload.note, reference=payload.reference,
             idempotency_key=payload.idempotency_key,
         )
@@ -199,8 +244,13 @@ async def redeem_reward(customer_id: uuid.UUID, payload: RewardRedeem, request: 
     reward = await db.scalar(select(Reward).where(Reward.id == payload.reward_id).with_for_update())
     if not customer or not reward or customer.brand_id != reward.brand_id or not reward.is_active:
         raise HTTPException(404, "العميل أو المكافأة غير موجود")
-    await brand_access(db, user, customer.brand_id, permission="rewards.redeem")
-    await ensure_branch(db, payload.branch_id, customer.brand_id)
+    access = await brand_access(db, user, customer.brand_id, permission="rewards.redeem")
+    branch_id = operational_branch(access, payload.branch_id)
+    brand = await db.get(Brand, customer.brand_id)
+    capabilities = brand_capabilities(brand) if brand else {}
+    if not capabilities.get("points") or not capabilities.get("rewards"):
+        raise HTTPException(409, "مكافآت النقاط غير مفعلة لهذا البراند")
+    await ensure_branch(db, branch_id, customer.brand_id)
     old = await db.scalar(select(LoyaltyTransaction).where(LoyaltyTransaction.idempotency_key == payload.idempotency_key))
     if old:
         return {"customer": customer_out(customer), "duplicate": True}
@@ -215,7 +265,7 @@ async def redeem_reward(customer_id: uuid.UUID, payload: RewardRedeem, request: 
     if reward.stock is not None:
         reward.stock -= 1
     tx = LoyaltyTransaction(
-        brand_id=customer.brand_id, branch_id=payload.branch_id, customer_id=customer.id,
+        brand_id=customer.brand_id, branch_id=branch_id, customer_id=customer.id,
         actor_id=user.id, action="redeem_reward", delta_points=-reward.points_cost,
         points_before=before, points_after=customer.points, stamps_before=customer.stamps,
         stamps_after=customer.stamps, amount=Decimal("0"), idempotency_key=payload.idempotency_key,
@@ -245,8 +295,15 @@ async def redeem_earned_reward(
     customer = await db.scalar(select(Customer).where(Customer.id == customer_id).with_for_update())
     if not customer:
         raise HTTPException(404, "العميل غير موجود")
-    await brand_access(db, user, customer.brand_id, permission="rewards.redeem")
-    await ensure_branch(db, payload.branch_id, customer.brand_id)
+    access = await brand_access(db, user, customer.brand_id, permission="rewards.redeem")
+    branch_id = operational_branch(access, payload.branch_id)
+    brand = await db.get(Brand, customer.brand_id)
+    capabilities = brand_capabilities(brand) if brand else {}
+    if capabilities.get("multi_stamp_cards"):
+        raise HTTPException(409, "اختر بطاقة الأختام وصرف مكافأتها من السكان السريع")
+    if not capabilities.get("rewards"):
+        raise HTTPException(409, "ميزة المكافآت غير مفعلة لهذا البراند")
+    await ensure_branch(db, branch_id, customer.brand_id)
     old = await db.scalar(
         select(LoyaltyTransaction).where(LoyaltyTransaction.idempotency_key == payload.idempotency_key)
     )
@@ -258,7 +315,7 @@ async def redeem_earned_reward(
     customer.available_rewards -= 1
     tx = LoyaltyTransaction(
         brand_id=customer.brand_id,
-        branch_id=payload.branch_id,
+        branch_id=branch_id,
         customer_id=customer.id,
         actor_id=user.id,
         action="redeem_earned",
@@ -308,8 +365,12 @@ async def redeem_coupon(
     customer = await db.scalar(select(Customer).where(Customer.id == customer_id).with_for_update())
     if not customer:
         raise HTTPException(404, "العميل غير موجود")
-    await brand_access(db, user, customer.brand_id, permission="rewards.redeem")
-    await ensure_branch(db, payload.branch_id, customer.brand_id)
+    access = await brand_access(db, user, customer.brand_id, permission="rewards.redeem")
+    branch_id = operational_branch(access, payload.branch_id)
+    brand = await db.get(Brand, customer.brand_id)
+    if not brand or not brand_capabilities(brand).get("coupons"):
+        raise HTTPException(409, "ميزة الكوبونات غير مفعلة لهذا البراند")
+    await ensure_branch(db, branch_id, customer.brand_id)
     duplicate = await db.scalar(
         select(CouponRedemption).where(CouponRedemption.idempotency_key == payload.idempotency_key)
     )
@@ -353,7 +414,7 @@ async def redeem_coupon(
         program,
         actor_id=user.id,
         action="coupon",
-        branch_id=payload.branch_id,
+        branch_id=branch_id,
         amount=Decimal("0"),
         points=points,
         stamps=stamps,
@@ -367,7 +428,7 @@ async def redeem_coupon(
         coupon_id=coupon.id,
         customer_id=customer.id,
         actor_id=user.id,
-        branch_id=payload.branch_id,
+        branch_id=branch_id,
         benefit=benefit,
         idempotency_key=payload.idempotency_key,
     )

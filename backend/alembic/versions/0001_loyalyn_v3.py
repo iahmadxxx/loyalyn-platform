@@ -28,9 +28,19 @@ def _add_missing_columns(bind, table_name, columns):
 
 
 
+def _new_id(bind):
+    value = uuid.uuid4()
+    return value.hex if bind.dialect.name == "sqlite" else value
+
+
 def _insert_missing_foundation_rows(bind):
     """Backfill tenant/access defaults for brands created by the legacy MVP."""
-    tables = Base.metadata.tables
+    # Reflect the database after adding the v3 columns. Using the current
+    # application metadata here would select future-version columns that do
+    # not exist yet on a legacy database (for example program_mode).
+    metadata = sa.MetaData()
+    metadata.reflect(bind=bind)
+    tables = metadata.tables
     brands = tables["brands"]
     users = tables["users"]
     access = tables["user_brand_access"]
@@ -45,7 +55,7 @@ def _insert_missing_foundation_rows(bind):
         brand = bind.execute(select(brands).where(brands.c.id == brand_id)).mappings().first()
         if not bind.execute(select(programs.c.id).where(programs.c.brand_id == brand_id)).first():
             bind.execute(programs.insert().values(
-                id=uuid.uuid4(), brand_id=brand_id, enabled=True, program_type="hybrid",
+                id=_new_id(bind), brand_id=brand_id, enabled=True, program_type="hybrid",
                 points_per_visit=10, points_per_currency=1, required_stamps=6,
                 stamp_reward_title="مكافأة مجانية", reward_points=100,
                 reward_title="مكافأة مجانية", birthday_bonus=0, referral_bonus=0,
@@ -54,12 +64,13 @@ def _insert_missing_foundation_rows(bind):
             ))
         if not bind.execute(select(designs.c.id).where(designs.c.brand_id == brand_id)).first():
             bind.execute(designs.insert().values(
-                id=uuid.uuid4(), brand_id=brand_id,
+                id=_new_id(bind), brand_id=brand_id,
                 background_color=(brand or {}).get("primary_color") or "#111827",
                 foreground_color="#FFFFFF",
                 label_color=(brand or {}).get("accent_color") or "#C6FF4A",
                 logo_text=(brand or {}).get("name") or "LOYALYN",
-                card_title="بطاقة الولاء", barcode_format="PKBarcodeFormatQR",
+                card_title="بطاقة الولاء", layout_style="classic", overlay_opacity=25,
+                barcode_format="PKBarcodeFormatQR",
                 fields={"show_points": True, "show_stamps": True, "show_rewards": True, "show_tier": True, "show_visits": True},
                 draft_version=1, published_version=0, is_published=False,
                 created_at=now, updated_at=now,
@@ -73,7 +84,7 @@ def _insert_missing_foundation_rows(bind):
             ]
             for name, rank, color, min_points in defaults:
                 bind.execute(tiers.insert().values(
-                    id=uuid.uuid4(), brand_id=brand_id, name=name, rank=rank,
+                    id=_new_id(bind), brand_id=brand_id, name=name, rank=rank,
                     color=color, min_points=min_points, min_spend=0,
                     points_multiplier=1, benefits={}, is_active=True,
                     created_at=now, updated_at=now,
@@ -90,7 +101,7 @@ def _insert_missing_foundation_rows(bind):
         normalized_role = "brand_admin" if row["role"] in {"owner", "admin", "manager", "brand_admin"} else row["role"]
         if not existing:
             bind.execute(access.insert().values(
-                id=uuid.uuid4(), user_id=row["id"], brand_id=row["brand_id"],
+                id=_new_id(bind), user_id=row["id"], brand_id=row["brand_id"],
                 role=normalized_role, permissions={}, is_active=bool(row["is_active"]),
                 created_at=now, updated_at=now,
             ))
@@ -99,7 +110,7 @@ def _insert_missing_foundation_rows(bind):
         ).first()
         if not employee_exists:
             bind.execute(employees.insert().values(
-                id=uuid.uuid4(), brand_id=row["brand_id"], user_id=row["id"],
+                id=_new_id(bind), brand_id=row["brand_id"], user_id=row["id"],
                 name=row["full_name"], email=row["email"], role=normalized_role,
                 permissions={}, is_active=bool(row["is_active"]),
                 created_at=now, updated_at=now,

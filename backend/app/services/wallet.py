@@ -161,6 +161,21 @@ def build_pass_json(
         {"key": "member", "label": "العميل", "value": customer.name},
         {"key": "memberCode", "label": "رقم العضوية", "value": customer.membership_code},
     ]
+    stamp_cards = list(getattr(customer, "_wallet_stamp_cards", []) or [])
+    if fields.get("show_stamps", True) and stamp_cards:
+        # Apple Wallet has limited field space, so the first active card is prominent
+        # and every active card remains available on the back of the pass.
+        first = stamp_cards[0]
+        secondary = [item for item in secondary if item.get("key") != "stamps"]
+        secondary.insert(0, {
+            "key": "stampCard", "label": first["name"],
+            "value": f"{first['stamps']} / {first['required_stamps']}",
+        })
+        for index, card in enumerate(stamp_cards):
+            back_fields.append({
+                "key": f"stampProgram{index}", "label": card["name"],
+                "value": f"{card['stamps']} من {card['required_stamps']} · مكافآت جاهزة: {card['rewards_available']}",
+            })
     if design.terms:
         back_fields.append({"key": "terms", "label": "الشروط والأحكام", "value": design.terms})
     return {
@@ -210,8 +225,9 @@ def generate_pkpass_bytes(
         logo2 = render_asset(design.logo_url, (320, 100), contain=True)
         (root / "logo.png").write_bytes(logo or make_icon(brand.name, design.background_color, design.foreground_color, 80))
         (root / "logo@2x.png").write_bytes(logo2 or make_icon(brand.name, design.background_color, design.foreground_color, 160))
-        strip = render_asset(design.hero_url, (375, 123), contain=False)
-        strip2 = render_asset(design.hero_url, (750, 246), contain=False)
+        strip_source = getattr(design, "strip_url", None) or design.hero_url or getattr(design, "background_image_url", None)
+        strip = render_asset(strip_source, (375, 123), contain=False)
+        strip2 = render_asset(strip_source, (750, 246), contain=False)
         if strip and strip2:
             (root / "strip.png").write_bytes(strip)
             (root / "strip@2x.png").write_bytes(strip2)

@@ -3,19 +3,51 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.api.deps import PLATFORM_ROLES, brand_access, current_user
+from app.api.deps import PLATFORM_ROLES, ROLE_PERMISSIONS, brand_access, current_user, effective_permissions
 from app.core.security import hash_password
 from app.db.session import get_db
 from app.models import (
-    AuditLog, Branch, Coupon, Employee, MembershipTier, Reward, User, UserBrandAccess,
+    AuditLog, AuthSession, Brand, Branch, Coupon, Employee, MembershipTier, Reward, User, UserBrandAccess,
 )
 from app.schemas.common import (
     BranchCreate, BranchUpdate, CouponCreate, CouponUpdate, RewardCreate, RewardUpdate,
     StaffCreate, StaffUpdate, TierCreate, TierUpdate,
 )
 from app.services.audit import add_audit
+from app.services.capabilities import brand_capabilities
 
 router = APIRouter()
+
+
+KNOWN_PERMISSIONS = set().union(*ROLE_PERMISSIONS.values()) - {"*"}
+
+def normalize_staff_permissions(value: dict | None) -> dict[str, bool]:
+    result: dict[str, bool] = {}
+    for key, enabled in (value or {}).items():
+        if key in KNOWN_PERMISSIONS and isinstance(enabled, bool):
+            result[key] = enabled
+    return result
+
+def ensure_permission_grant(actor, access, target_role: str, custom: dict[str, bool]) -> None:
+    if actor.role in PLATFORM_ROLES:
+        return
+    actor_role = access.role if access else actor.role
+    actor_permissions = effective_permissions(actor_role, access.permissions if access else {})
+    if actor_permissions.get("*", False):
+        return
+    target_permissions = effective_permissions(target_role, custom)
+    elevated = [key for key, enabled in target_permissions.items() if enabled and not actor_permissions.get(key, False)]
+    if target_permissions.get("*", False) or elevated:
+        raise HTTPException(403, "لا يمكنك منح صلاحيات أعلى من صلاحياتك")
+
+async def require_feature(db: AsyncSession, brand_id: uuid.UUID, feature: str, message: str) -> Brand:
+    brand = await db.get(Brand, brand_id)
+    if not brand or not brand.is_active:
+        raise HTTPException(404, "البراند غير موجود أو موقوف")
+    if not brand_capabilities(brand).get(feature):
+        raise HTTPException(409, message)
+    return brand
+
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -34,10 +66,12 @@ def branch_out(x: Branch) -> dict:
 
 
 def staff_out(x: Employee) -> dict:
+    custom = x.permissions or {}
     return {
         "id": str(x.id), "brand_id": str(x.brand_id), "branch_id": str(x.branch_id) if x.branch_id else None,
         "user_id": str(x.user_id) if x.user_id else None, "name": x.name, "email": x.email,
-        "phone": x.phone, "role": x.role, "permissions": x.permissions or {}, "is_active": x.is_active,
+        "phone": x.phone, "role": x.role, "permissions": custom,
+        "effective_permissions": effective_permissions(x.role, custom), "is_active": x.is_active,
         "created_at": x.created_at,
     }
 
@@ -46,6 +80,17 @@ def staff_out(x: Employee) -> dict:
 async def list_branches(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, brand_id, permission="branches.view")
     rows = list((await db.scalars(select(Branch).where(Branch.brand_id == brand_id).order_by(Branch.created_at.desc()))).all())
+    return [branch_out(x) for x in rows]
+
+
+@router.get("/branch-options")
+async def branch_options(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    """Branches usable by the current account in operational forms and fast scan."""
+    access = await brand_access(db, user, brand_id, permission="brand.view")
+    query = select(Branch).where(Branch.brand_id == brand_id, Branch.is_active.is_(True))
+    if access and access.branch_id:
+        query = query.where(Branch.id == access.branch_id)
+    rows = list((await db.scalars(query.order_by(Branch.name))).all())
     return [branch_out(x) for x in rows]
 
 
@@ -87,6 +132,10 @@ async def create_staff(payload: StaffCreate, request: Request, db: AsyncSession 
     access = await brand_access(db, user, payload.brand_id, permission="staff.manage")
     if payload.role == "brand_admin" and user.role not in PLATFORM_ROLES and (not access or access.role != "brand_admin"):
         raise HTTPException(403, "لا يمكنك إنشاء مدير براند")
+    permissions = normalize_staff_permissions(payload.permissions)
+    if payload.role == "brand_admin":
+        permissions = {"*": True}
+    ensure_permission_grant(user, access, payload.role, permissions)
     account = await db.scalar(select(User).where(User.email == payload.email.lower()))
     if account:
         if await db.scalar(select(UserBrandAccess).where(UserBrandAccess.user_id == account.id, UserBrandAccess.brand_id == payload.brand_id)):
@@ -109,12 +158,12 @@ async def create_staff(payload: StaffCreate, request: Request, db: AsyncSession 
         await db.flush()
     access_row = UserBrandAccess(
         user_id=account.id, brand_id=payload.brand_id, role=payload.role,
-        branch_id=payload.branch_id, permissions=payload.permissions, is_active=True,
+        branch_id=payload.branch_id, permissions=permissions, is_active=True,
     )
     employee = Employee(
         brand_id=payload.brand_id, branch_id=payload.branch_id, user_id=account.id,
         name=payload.name, email=payload.email.lower(), phone=payload.phone,
-        role=payload.role, permissions=payload.permissions, is_active=True,
+        role=payload.role, permissions=permissions, is_active=True,
     )
     db.add_all([access_row, employee])
     await db.flush()
@@ -129,9 +178,18 @@ async def update_staff(employee_id: uuid.UUID, payload: StaffUpdate, request: Re
     employee = await db.get(Employee, employee_id)
     if not employee:
         raise HTTPException(404, "الموظف غير موجود")
-    await brand_access(db, user, employee.brand_id, permission="staff.manage")
+    access = await brand_access(db, user, employee.brand_id, permission="staff.manage")
     data = payload.model_dump(exclude_unset=True)
     password = data.pop("password", None)
+    target_role = data.get("role", employee.role)
+    if target_role == "brand_admin" and user.role not in PLATFORM_ROLES and (not access or access.role != "brand_admin"):
+        raise HTTPException(403, "لا يمكنك تعيين مدير براند")
+    target_permissions = normalize_staff_permissions(data.get("permissions", employee.permissions or {}))
+    if target_role == "brand_admin":
+        target_permissions = {"*": True}
+    ensure_permission_grant(user, access, target_role, target_permissions)
+    if "permissions" in data or "role" in data:
+        data["permissions"] = target_permissions
     for field, value in data.items():
         setattr(employee, field, value)
     if employee.user_id:
@@ -161,6 +219,10 @@ async def update_staff(employee_id: uuid.UUID, payload: StaffUpdate, request: Re
                 account.is_active = False
             if password:
                 account.password_hash = hash_password(password)
+                sessions = list((await db.scalars(select(AuthSession).where(AuthSession.user_id == account.id, AuthSession.revoked_at.is_(None)))).all())
+                now = datetime.now(timezone.utc)
+                for session in sessions:
+                    session.revoked_at = now
         access_row = await db.scalar(select(UserBrandAccess).where(UserBrandAccess.user_id == employee.user_id, UserBrandAccess.brand_id == employee.brand_id))
         if access_row:
             access_row.role = employee.role
@@ -175,7 +237,7 @@ async def update_staff(employee_id: uuid.UUID, payload: StaffUpdate, request: Re
 
 @router.get("/tiers")
 async def list_tiers(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
-    await brand_access(db, user, brand_id, permission="loyalty.view")
+    await brand_access(db, user, brand_id, permission="loyalty.manage")
     rows = list((await db.scalars(select(MembershipTier).where(MembershipTier.brand_id == brand_id).order_by(MembershipTier.rank))).all())
     return [{"id": str(x.id), "name": x.name, "rank": x.rank, "color": x.color, "min_points": x.min_points, "min_spend": x.min_spend, "points_multiplier": x.points_multiplier, "benefits": x.benefits or {}, "is_active": x.is_active} for x in rows]
 
@@ -183,6 +245,7 @@ async def list_tiers(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), us
 @router.post("/tiers", status_code=201)
 async def create_tier(payload: TierCreate, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, payload.brand_id, permission="loyalty.manage")
+    await require_feature(db, payload.brand_id, "tiers", "ميزة مستويات العضوية غير مفعلة لهذا البراند")
     tier = MembershipTier(**payload.model_dump())
     db.add(tier)
     await db.commit()
@@ -196,6 +259,7 @@ async def delete_tier(tier_id: uuid.UUID, db: AsyncSession = Depends(get_db), us
     if not tier:
         raise HTTPException(404, "المستوى غير موجود")
     await brand_access(db, user, tier.brand_id, permission="loyalty.manage")
+    await require_feature(db, tier.brand_id, "tiers", "ميزة مستويات العضوية غير مفعلة لهذا البراند")
     tier.is_active = False
     await db.commit()
     return {"ok": True}
@@ -203,14 +267,24 @@ async def delete_tier(tier_id: uuid.UUID, db: AsyncSession = Depends(get_db), us
 
 @router.get("/rewards")
 async def list_rewards(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
-    await brand_access(db, user, brand_id, permission="loyalty.view")
+    await brand_access(db, user, brand_id, permission="loyalty.manage")
     rows = list((await db.scalars(select(Reward).where(Reward.brand_id == brand_id).order_by(Reward.created_at.desc()))).all())
     return [{"id": str(x.id), "name": x.name, "description": x.description, "points_cost": x.points_cost, "stock": x.stock, "image_url": x.image_url, "is_active": x.is_active} for x in rows]
+
+
+@router.get("/reward-options")
+async def reward_options(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    await brand_access(db, user, brand_id, permission="rewards.redeem")
+    rows = list((await db.scalars(select(Reward).where(Reward.brand_id == brand_id, Reward.is_active.is_(True)).order_by(Reward.points_cost, Reward.name))).all())
+    return [{"id": str(x.id), "name": x.name, "points_cost": x.points_cost, "stock": x.stock} for x in rows if x.stock is None or x.stock > 0]
 
 
 @router.post("/rewards", status_code=201)
 async def create_reward(payload: RewardCreate, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, payload.brand_id, permission="loyalty.manage")
+    brand = await require_feature(db, payload.brand_id, "rewards", "ميزة المكافآت غير مفعلة لهذا البراند")
+    if not brand_capabilities(brand).get("points"):
+        raise HTTPException(409, "مكافآت النقاط تتطلب تفعيل ميزة النقاط؛ مكافآت الأختام تُضبط داخل بطاقة الأختام")
     reward = Reward(**payload.model_dump())
     db.add(reward)
     await db.commit()
@@ -224,6 +298,9 @@ async def toggle_reward(reward_id: uuid.UUID, db: AsyncSession = Depends(get_db)
     if not reward:
         raise HTTPException(404, "المكافأة غير موجودة")
     await brand_access(db, user, reward.brand_id, permission="loyalty.manage")
+    brand = await require_feature(db, reward.brand_id, "rewards", "ميزة المكافآت غير مفعلة لهذا البراند")
+    if not brand_capabilities(brand).get("points"):
+        raise HTTPException(409, "مكافآت النقاط غير مفعلة لهذا البراند")
     reward.is_active = not reward.is_active
     await db.commit()
     return {"ok": True, "is_active": reward.is_active}
@@ -242,6 +319,7 @@ async def update_tier(tier_id: uuid.UUID, payload: TierUpdate, request: Request,
     if not tier:
         raise HTTPException(404, "المستوى غير موجود")
     await brand_access(db, user, tier.brand_id, permission="loyalty.manage")
+    await require_feature(db, tier.brand_id, "tiers", "ميزة مستويات العضوية غير مفعلة لهذا البراند")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(tier, field, value)
     add_audit(db, actor_id=user.id, action="membership_tier_updated", entity_type="membership_tier", entity_id=tier.id, brand_id=tier.brand_id, details={"name": tier.name}, ip_address=request.client.host if request.client else None)
@@ -256,6 +334,9 @@ async def update_reward(reward_id: uuid.UUID, payload: RewardUpdate, request: Re
     if not reward:
         raise HTTPException(404, "المكافأة غير موجودة")
     await brand_access(db, user, reward.brand_id, permission="loyalty.manage")
+    brand = await require_feature(db, reward.brand_id, "rewards", "ميزة المكافآت غير مفعلة لهذا البراند")
+    if not brand_capabilities(brand).get("points"):
+        raise HTTPException(409, "مكافآت النقاط غير مفعلة لهذا البراند")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(reward, field, value)
     add_audit(db, actor_id=user.id, action="reward_updated", entity_type="reward", entity_id=reward.id, brand_id=reward.brand_id, details={"name": reward.name}, ip_address=request.client.host if request.client else None)
@@ -277,14 +358,32 @@ def coupon_out(coupon: Coupon) -> dict:
 
 @router.get("/coupons")
 async def list_coupons(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
-    await brand_access(db, user, brand_id, permission="loyalty.view")
+    await brand_access(db, user, brand_id, permission="loyalty.manage")
     rows = list((await db.scalars(select(Coupon).where(Coupon.brand_id == brand_id).order_by(Coupon.created_at.desc()))).all())
     return [coupon_out(x) for x in rows]
+
+
+@router.get("/coupon-options")
+async def coupon_options(brand_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    await brand_access(db, user, brand_id, permission="rewards.redeem")
+    now = datetime.now(timezone.utc)
+    rows = list((await db.scalars(select(Coupon).where(Coupon.brand_id == brand_id, Coupon.is_active.is_(True)).order_by(Coupon.name))).all())
+    visible = []
+    for x in rows:
+        if _aware(x.starts_at) and _aware(x.starts_at) > now:
+            continue
+        if _aware(x.ends_at) and _aware(x.ends_at) <= now:
+            continue
+        if x.max_redemptions is not None and x.redemption_count >= x.max_redemptions:
+            continue
+        visible.append({"id": str(x.id), "code": x.code, "name": x.name, "reward_type": x.reward_type, "reward_value": float(x.reward_value or 0)})
+    return visible
 
 
 @router.post("/coupons", status_code=201)
 async def create_coupon(payload: CouponCreate, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     await brand_access(db, user, payload.brand_id, permission="loyalty.manage")
+    await require_feature(db, payload.brand_id, "coupons", "ميزة الكوبونات غير مفعلة لهذا البراند")
     if _aware(payload.ends_at) and _aware(payload.starts_at) and _aware(payload.ends_at) <= _aware(payload.starts_at):
         raise HTTPException(400, "تاريخ نهاية الكوبون يجب أن يكون بعد تاريخ البداية")
     if await db.scalar(select(Coupon).where(Coupon.brand_id == payload.brand_id, Coupon.code == payload.code)):
@@ -304,6 +403,7 @@ async def update_coupon(coupon_id: uuid.UUID, payload: CouponUpdate, request: Re
     if not coupon:
         raise HTTPException(404, "الكوبون غير موجود")
     await brand_access(db, user, coupon.brand_id, permission="loyalty.manage")
+    await require_feature(db, coupon.brand_id, "coupons", "ميزة الكوبونات غير مفعلة لهذا البراند")
     data = payload.model_dump(exclude_unset=True)
     start = data.get("starts_at", coupon.starts_at)
     end = data.get("ends_at", coupon.ends_at)

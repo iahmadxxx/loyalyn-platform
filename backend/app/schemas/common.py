@@ -17,6 +17,11 @@ class BrandCreate(BaseModel):
     currency: str = Field(default="QAR", min_length=3, max_length=8)
     timezone: str = Field(default="Asia/Qatar", max_length=64)
     locale: str = Field(default="ar", max_length=12)
+    program_mode: str = Field(default="full", pattern=r"^(stamps_only|points_only|stamps_points|full|custom)$")
+    feature_flags: dict = Field(default_factory=dict)
+    join_enabled: bool = True
+    join_require_email: bool = False
+    join_welcome_text: str | None = Field(default=None, max_length=1000)
     manager_name: str | None = Field(default=None, max_length=120)
     manager_email: EmailStr | None = None
     manager_password: str | None = Field(default=None, min_length=8, max_length=200)
@@ -35,6 +40,11 @@ class BrandUpdate(BaseModel):
     currency: str | None = Field(default=None, min_length=3, max_length=8)
     timezone: str | None = Field(default=None, max_length=64)
     locale: str | None = Field(default=None, max_length=12)
+    program_mode: str | None = Field(default=None, pattern=r"^(stamps_only|points_only|stamps_points|full|custom)$")
+    feature_flags: dict | None = None
+    join_enabled: bool | None = None
+    join_require_email: bool | None = None
+    join_welcome_text: str | None = Field(default=None, max_length=1000)
     is_active: bool | None = None
 
 
@@ -188,6 +198,10 @@ class WalletDesignUpdate(BaseModel):
     card_title: str = Field(min_length=1, max_length=120)
     logo_url: str | None = None
     hero_url: str | None = None
+    background_image_url: str | None = None
+    strip_url: str | None = None
+    layout_style: str = Field(default="classic", pattern=r"^(classic|visual|minimal)$")
+    overlay_opacity: int = Field(default=25, ge=0, le=90)
     barcode_format: str = Field(default="PKBarcodeFormatQR", pattern=r"^(PKBarcodeFormatQR|PKBarcodeFormatPDF417|PKBarcodeFormatAztec|PKBarcodeFormatCode128)$")
     fields: dict = Field(default_factory=dict)
     terms: str | None = None
@@ -278,3 +292,73 @@ class CouponRedeem(BaseModel):
     @classmethod
     def normalize_code(cls, value: str) -> str:
         return value.strip().upper()
+
+
+class BrandProgramProfileUpdate(BaseModel):
+    program_mode: str = Field(pattern=r"^(stamps_only|points_only|stamps_points|full|custom)$")
+    feature_flags: dict = Field(default_factory=dict)
+    join_enabled: bool = True
+    join_require_email: bool = False
+    join_welcome_text: str | None = Field(default=None, max_length=1000)
+
+
+class StampProgramCreate(BaseModel):
+    brand_id: UUID
+    name: str = Field(min_length=2, max_length=160)
+    slug: str = Field(pattern=r"^[a-z0-9-]+$", min_length=2, max_length=80)
+    description: str | None = Field(default=None, max_length=1000)
+    required_stamps: int = Field(default=10, ge=1, le=100)
+    reward_title: str = Field(default="مكافأة مجانية", min_length=2, max_length=160)
+    reward_type: str = Field(default="free_item", pattern=r"^(free_item|discount|custom)$")
+    stamp_icon: str = Field(default="coffee", min_length=1, max_length=40)
+    background_color: str = Field(default="#111827", pattern=r"^#[0-9A-Fa-f]{6}$")
+    accent_color: str = Field(default="#C6FF4A", pattern=r"^#[0-9A-Fa-f]{6}$")
+    is_default: bool = False
+    sort_order: int = Field(default=0, ge=0, le=1000)
+
+    @field_validator("slug")
+    @classmethod
+    def normalize_stamp_slug(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class StampProgramUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=160)
+    slug: str | None = Field(default=None, pattern=r"^[a-z0-9-]+$", min_length=2, max_length=80)
+    description: str | None = Field(default=None, max_length=1000)
+    required_stamps: int | None = Field(default=None, ge=1, le=100)
+    reward_title: str | None = Field(default=None, min_length=2, max_length=160)
+    reward_type: str | None = Field(default=None, pattern=r"^(free_item|discount|custom)$")
+    stamp_icon: str | None = Field(default=None, min_length=1, max_length=40)
+    background_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    accent_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    is_default: bool | None = None
+    sort_order: int | None = Field(default=None, ge=0, le=1000)
+    is_active: bool | None = None
+
+    @field_validator("slug")
+    @classmethod
+    def normalize_optional_stamp_slug(cls, value: str | None) -> str | None:
+        return value.strip().lower() if value else value
+
+
+class StampAction(BaseModel):
+    branch_id: UUID | None = None
+    quantity: int = Field(default=1, ge=1, le=20)
+    note: str | None = Field(default=None, max_length=500)
+    reference: str | None = Field(default=None, max_length=120)
+    idempotency_key: str = Field(min_length=8, max_length=100)
+
+
+class StampRedeem(BaseModel):
+    branch_id: UUID | None = None
+    note: str | None = Field(default=None, max_length=500)
+    idempotency_key: str = Field(min_length=8, max_length=100)
+
+
+class PublicJoin(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(min_length=5, max_length=32)
+    email: EmailStr | None = None
+    birthday: date | None = None
+    selected_program_ids: list[UUID] = Field(default_factory=list)
