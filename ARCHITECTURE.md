@@ -1,34 +1,46 @@
-# Loyalyn Architecture
+# Loyalyn 3 Architecture
 
-## Product areas
+## Trust boundaries
 
-1. Public marketing site
-2. Customer enrollment and web membership card
-3. Employee QR scanner and customer lookup
-4. Brand administration dashboard
-5. Wallet certificate vault and pass design editor
-6. Loyalty rules engine and transaction ledger
-7. Audit, reporting, and fraud controls
+- `platform_owner`: platform-wide brand administration and central Apple Wallet credential only.
+- `brand_admin`: full control inside authorized brand memberships; no central credential access.
+- `manager`: operational brand access without platform or employee-account administration.
+- `employee`: customer, loyalty application, reward redemption and Wallet issuing as allowed.
 
-## Security boundaries
+Every brand-scoped API calls `brand_access()` on the server. Hiding a navigation item is not treated as authorization.
 
-- Super admins manage platform-wide settings and certificates.
-- Brand owners manage only their brands.
-- Managers manage assigned branches and employee actions.
-- Employees can scan, add eligible transactions, and redeem according to policy.
-- Customers can access only their own membership record through signed links or verified sessions.
-- Certificate material must be encrypted at rest and never returned by the API.
-- Every mutation must include an idempotency key and be written to an audit log.
+## Data flow
 
-## Apple Wallet activation workflow
+```text
+Next.js dashboard
+  -> FastAPI authorization + validation
+  -> PostgreSQL transaction / audit log
+  -> response with explicit success or error
 
-1. Upload `.p12` and password through the owner-only page.
-2. Parse PKCS#12 in memory.
-3. Validate certificate chain, expiry, and Pass Type ID relationship.
-4. Encrypt certificate and password using the platform encryption key.
-5. Generate and sign a test pass.
-6. Install the test pass manually.
-7. Enable production issuance only after successful validation.
-8. Notify owners before certificate expiry.
+Campaign API
+  -> notification_campaigns
+  -> worker claim with row lock
+  -> recipients + channel provider
+  -> delivery counters / retries
 
-The current repository contains the upload and state workflow. Real certificate persistence is intentionally left behind a clearly marked secure implementation boundary so plaintext credentials cannot be accidentally stored.
+Brand Wallet design
+  + customer balance
+  + central platform certificate
+  -> signed pkpass
+  -> Apple Wallet web service / APNs update
+```
+
+## Main tables
+
+- Identity/tenancy: `users`, `brands`, `user_brand_access`, `branches`, `employees`
+- Customers/loyalty: `customers` (including optional `home_branch_id`), `loyalty_programs`, `loyalty_transactions`, `membership_tiers`, `rewards`, `coupons`, `coupon_redemptions`
+- Wallet: `brand_wallet_designs`, `platform_wallet_credentials`, `wallet_passes`, `wallet_devices`, `wallet_registrations`
+- Messaging: `notification_templates`, `notification_campaigns`, `notification_recipients`, `notifications`
+- Accountability: `audit_logs`
+
+## Sensitive data
+
+- `.env` is not included in the release archive.
+- Wallet files live under the `loyalyn_data` Docker volume.
+- Wallet credential folders and extracted private keys are restricted to owner-only filesystem permissions.
+- Certificate passwords are encrypted before database storage and are never returned by the API.

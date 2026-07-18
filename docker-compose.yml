@@ -12,7 +12,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 15
+      retries: 20
   api:
     build: ./backend
     restart: unless-stopped
@@ -27,7 +27,19 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 15s
       timeout: 5s
-      retries: 10
+      retries: 15
+  worker:
+    build: ./backend
+    restart: unless-stopped
+    command: ["sh", "-c", "alembic upgrade head && python -m app.worker"]
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - loyalyn_data:/app/data
   web:
     build:
       context: ./frontend
