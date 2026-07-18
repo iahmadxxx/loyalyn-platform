@@ -1,4 +1,4 @@
-# Loyalyn 6.0.1 — Single-Brand Stamp Studio
+# Loyalyn 6.0.2 — Single-Brand Stamp Studio
 
 Loyalyn V6 is a focused Apple Wallet stamp-card system for one brand. The administration experience is intentionally small and direct: design cards, register customers, assign one or several cards, scan, and review operations.
 

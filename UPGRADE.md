@@ -1,4 +1,4 @@
-# Upgrade Loyalyn to 6.0.1
+# Upgrade Loyalyn to 6.0.2
 
 Version 6 preserves the PostgreSQL volume, brands, customers, stamp balances, operations, employees, permissions, Wallet credentials and issued-pass history. It adds multi-card customer assignments, per-card Wallet passes and exact stamp presentation settings.
 
@@ -20,7 +20,7 @@ sudo ./deploy/upgrade.sh
 Expected version:
 
 ```text
-6.0.1
+6.0.2
 ```
 
 Expected Alembic head:
@@ -63,3 +63,9 @@ docker compose exec -T db psql \
 8. Scan the membership code and confirm all active cards appear together.
 9. Add and reverse a test stamp.
 10. Test a real pass on iPhone using the production Apple certificate.
+
+## v6.0.0 stale migration cleanup
+
+The upgrade script safely removes `backend/alembic/versions/0005_single_brand_studio.py` if an earlier manual GitHub upload left it in the checkout. The valid chain is:
+
+`0004_card_templates -> 0005_stamp_customization -> 0006_single_brand_studio`

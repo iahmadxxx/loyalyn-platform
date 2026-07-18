@@ -31,7 +31,7 @@ services:
   worker:
     build: ./backend
     restart: unless-stopped
-    command: ["sh", "-c", "alembic upgrade head && python -m app.worker"]
+    command: ["python", "-m", "app.worker"]
     env_file: .env
     depends_on:
       db:

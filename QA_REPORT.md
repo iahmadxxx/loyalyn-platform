@@ -1,4 +1,4 @@
-# Loyalyn 6.0.1 QA Report
+# Loyalyn 6.0.2 QA Report
 
 ## Backend unit tests
 
@@ -64,7 +64,7 @@ npm run build
 - TypeScript validation passed.
 - Next.js 15.4.10 production build passed.
 - Generated routes include `/admin`, `/join/[slug]`, `/card/[token]`, `/employee` and `/login`.
-- OpenAPI reports version `6.0.1` with **84 paths**.
+- OpenAPI reports version `6.0.2` with **84 paths**.
 
 ## Browser and Apple acceptance
 
@@ -72,10 +72,20 @@ The current execution environment blocks Chromium from navigating to localhost w
 
 A real Apple Pass Type certificate, matching WWDR certificate and physical iPhone are required to verify installation and production APNs updates. No private Apple credential is included in the archive.
 
-## v6.0.1 hotfix validation
+## v6.0.2 hotfix validation
 
 - Backend unit tests: 19 passed.
 - Alembic legacy-upgrade simulation: `0005_stamp_customization` -> `0006_single_brand_studio` passed.
 - Verified both `settings` and `display_options` columns after upgrade.
 - Frontend TypeScript check passed.
 - Next.js production build passed.
+
+## v6.0.2 multiple-head hotfix validation
+
+- Backend tests: `19 passed`.
+- Clean migration graph: exactly `0006_single_brand_studio (head)`.
+- Reproduced the deployment fault by adding the obsolete `0005_single_brand_studio.py`; Alembic then reported two heads.
+- Removed the obsolete migration using the same cleanup performed by `deploy/upgrade.sh`; Alembic returned to one head.
+- TypeScript check passed.
+- Next.js production build passed and generated all routes.
+- `deploy/upgrade.sh` passed `bash -n` syntax validation.
