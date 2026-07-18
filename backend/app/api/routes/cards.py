@@ -330,6 +330,23 @@ async def upload_template_asset(
     return {"ok": True, "kind": kind, "asset_url": f"{settings.public_api_url.rstrip('/')}/api/cards/public/assets/{template.id}/{kind}"}
 
 
+@router.delete("/templates/{template_id}/asset/{kind}", status_code=204)
+async def delete_template_asset(template_id: uuid.UUID, kind: str, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    template = await db.get(CardTemplate, template_id)
+    if not template:
+        raise HTTPException(404, "البطاقة غير موجودة")
+    await brand_access(db, user, template.brand_id, permission="wallet.design")
+    if kind not in {"logo", "hero", "background", "strip"}:
+        raise HTTPException(400, "نوع الصورة غير صحيح")
+    field = {"logo": "logo_url", "hero": "hero_url", "background": "background_image_url", "strip": "strip_url"}[kind]
+    value = getattr(template, field)
+    if value and value.startswith("storage://"):
+        Path(value.removeprefix("storage://")).unlink(missing_ok=True)
+    setattr(template, field, None)
+    template.draft_version += 1
+    await db.commit()
+
+
 @router.get("/public/assets/{template_id}/{kind}")
 async def public_template_asset(template_id: uuid.UUID, kind: str, version: str | None = None, db: AsyncSession = Depends(get_db)):
     template = await db.get(CardTemplate, template_id)

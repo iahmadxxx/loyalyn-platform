@@ -9,19 +9,34 @@ import {
 } from 'lucide-react'
 
 type Row = Record<string, any>
-const stampIcon=(value:string)=>({coffee:'☕',cake:'🍰',cookie:'🍪',cup:'🥤',star:'★'} as Row)[value]||'●'
+const stampIcon=(value:string)=>({coffee:'☕',espresso:'☕',bean:'◉',cup:'🥤',cold_drink:'🧋',tea:'🍵',juice:'🧃',cake:'🍰',cookie:'🍪',donut:'🍩',croissant:'🥐',cupcake:'🧁',icecream:'🍨',chocolate:'🍫',breakfast:'🍳',burger:'🍔',pizza:'🍕',sandwich:'🥪',salad:'🥗',star:'★',heart:'♥',gift:'🎁',crown:'♛',sparkle:'✦',custom:'●'} as any)[value]||'●'
+
+function templateFields(template:Row){
+  return {background_mode:'solid',gradient_start:template.background_color||'#111827',gradient_end:template.background_color||'#111827',image_fit:'cover',image_position:'center',max_front_programs:2,card_corner_style:'rounded',...(template.fields||{})}
+}
+
+function MiniStampProgress({program,mode}:any){
+  const settings=program.settings||{},total=Math.max(1,Number(program.required_stamps||1)),visible=Math.min(total,8)
+  const display=mode==='program'?(settings.display_mode||'icons_count'):mode==='count'?'count_only':mode==='icons'?'icons_only':settings.display_mode||'icons_count'
+  if(display==='count_only')return <small>0 / {total}</small>
+  if(display==='progress')return <div className="stamp-progress mini"><i style={{width:'0%',background:program.accent_color}}/></div>
+  return <div className="mini-stamp-dots">{Array.from({length:visible}).map((_,index)=><i key={index} className={`stamp-shape-${settings.stamp_shape||'circle'}`} style={{borderColor:program.accent_color,color:program.accent_color}}>{stampIcon(program.stamp_icon)}</i>)}</div>
+}
 
 function MiniCard({template,brand,selected}:any){
-  const style:any={backgroundColor:template.background_color||brand.primary_color,color:template.foreground_color||'#fff'}
-  if(template.background_image_url){
-    const opacity=Math.max(0,Math.min(90,Number(template.overlay_opacity||25)))/100
-    style.backgroundImage=`linear-gradient(rgba(0,0,0,${opacity}),rgba(0,0,0,${opacity})),url(${template.background_image_url})`
-  }
-  return <div className={`join-template-card ${selected?'selected':''}`} style={style}>
-    <div className="join-template-head"><div><small style={{color:template.label_color}}>MEMBER CARD</small><b>{template.logo_text||brand.name}</b></div>{selected&&<span className="template-check"><Check size={16}/></span>}</div>
+  const fields=templateFields(template),overlay=Math.max(0,Math.min(90,Number(template.overlay_opacity||25)))/100
+  const style:any={backgroundColor:template.background_color||brand.primary_color,color:template.foreground_color||'#fff',backgroundPosition:fields.image_position||'center',backgroundSize:fields.image_fit||'cover',backgroundRepeat:'no-repeat'}
+  const gradient=`linear-gradient(135deg,${fields.gradient_start},${fields.gradient_end})`
+  if(fields.background_mode==='gradient')style.backgroundImage=gradient
+  if(template.background_image_url&&fields.background_mode==='image')style.backgroundImage=`linear-gradient(rgba(0,0,0,${overlay}),rgba(0,0,0,${overlay})),url(${template.background_image_url})`
+  if(template.background_image_url&&fields.background_mode==='image_gradient')style.backgroundImage=`linear-gradient(135deg,${fields.gradient_start}99,${fields.gradient_end}99),linear-gradient(rgba(0,0,0,${overlay}),rgba(0,0,0,${overlay})),url(${template.background_image_url})`
+  const rows=(template.programs||[]).filter((x:Row)=>x.settings?.show_on_wallet_front!==false).slice(0,Math.max(1,Math.min(3,Number(fields.max_front_programs||2))))
+  return <div className={`join-template-card ${selected?'selected':''} layout-${template.layout_style||'classic'} corners-${fields.card_corner_style||'rounded'}`} style={style}>
+    <div className="join-template-head"><div><small style={{color:template.label_color}}>MEMBER CARD</small><b>{template.logo_text||brand.name}</b></div>{template.logo_url?<img className="join-template-logo" src={template.logo_url} alt=""/>:selected&&<span className="template-check"><Check size={16}/></span>}</div>
+    {template.hero_url&&<img className="join-template-hero" src={template.hero_url} style={{objectFit:fields.image_fit||'cover',objectPosition:fields.image_position||'center'}} alt=""/>}
     <p>{template.card_title||'بطاقة الولاء'}</p>
-    <div className="join-template-programs">{(template.programs||[]).slice(0,3).map((program:Row)=><span key={program.id}><i>{stampIcon(program.stamp_icon)}</i><b>{program.name}</b><small>0 / {program.required_stamps}</small></span>)}</div>
-    {(template.programs||[]).length>3&&<em>+ {(template.programs||[]).length-3} برامج أخرى</em>}
+    <div className="join-template-programs advanced">{rows.map((program:Row)=><span key={program.id}><i>{stampIcon(program.stamp_icon)}</i><div><b>{program.name}</b><MiniStampProgress program={program} mode={fields.stamp_display_mode||'program'}/></div></span>)}</div>
+    {(template.programs||[]).length>rows.length&&<em>+ {(template.programs||[]).length-rows.length} برامج أخرى</em>}
   </div>
 }
 

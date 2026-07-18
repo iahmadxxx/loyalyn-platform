@@ -164,7 +164,7 @@ async def main():
 
             print(json.dumps({
                 "ok": True,
-                "version": "5.0.0",
+                "version": "5.1.0",
                 "one_main_card_per_customer": True,
                 "multiple_stamp_programs_in_one_card": True,
                 "multiple_card_templates": True,

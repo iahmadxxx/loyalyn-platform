@@ -1,4 +1,4 @@
-# Loyalyn 5.0.0 QA Report
+# Loyalyn 5.1.0 QA Report
 
 ## Backend unit tests
 
@@ -6,7 +6,7 @@
 PYTHONPATH=backend pytest -q backend/tests
 ```
 
-Result: **19 passed**.
+Result: **22 passed**.
 
 ## V5 card-template workflow
 
@@ -40,8 +40,8 @@ These cover tenant isolation, multi-brand access, employee branch scope/privacy,
 
 ## Alembic
 
-- Legacy schema upgraded successfully through `0004_card_templates`.
-- A clean isolated database upgraded to head `0004_card_templates`.
+- Legacy schema upgraded successfully through `0005_stamp_customization`.
+- A clean isolated database upgraded to head `0005_stamp_customization`.
 - Clean schema contained **30 tables** and all V5 card/assignment/transaction tables.
 - Migration 0004 includes existence guards because the original foundation migration bootstraps old databases from current metadata.
 
@@ -56,7 +56,7 @@ NEXT_PUBLIC_API_URL=https://api.loyalyn.site npm run build
 - TypeScript validation passed.
 - Next.js 15.4.10 production build passed.
 - Generated routes include `/admin`, `/employee`, `/join/[slug]`, `/card/[token]` and `/login`.
-- OpenAPI reports version `5.0.0` with **79 paths**.
+- OpenAPI reports version `5.1.0` with **84 paths**.
 
 ## Responsive acceptance
 
@@ -65,3 +65,11 @@ The release contains the automated Playwright mobile smoke test (`scripts/qa_mob
 ## External acceptance still required
 
 A real Apple Pass Type certificate, matching WWDR certificate and physical iPhone are required for final Wallet installation and live APNs verification. No Apple private credential is embedded in the release archive.
+
+## 5.1.0 verification
+
+- Python compilation completed successfully.
+- 22 backend unit tests passed, including advanced stamp settings and icon library coverage.
+- TypeScript validation passed with `npx tsc --noEmit`.
+- Next.js production compilation, type checking and static page generation completed; the container environment did not return from the final trace collection step before its execution timeout.
+- The migration chain now ends at `0005_stamp_customization`.

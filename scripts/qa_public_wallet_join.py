@@ -1,4 +1,4 @@
-"""End-to-end public join -> real .pkpass delivery test for Loyalyn 5.0.0."""
+"""End-to-end public join -> real .pkpass delivery test for Loyalyn 5.1.0."""
 from __future__ import annotations
 
 import asyncio
@@ -129,7 +129,7 @@ async def main():
 
                 print({
                     "ok": True,
-                    "version": "5.0.0",
+                    "version": "5.1.0",
                     "pending_state_is_explicit": True,
                     "stable_card_url_before_setup": True,
                     "join_returns_real_pkpass_after_setup": True,

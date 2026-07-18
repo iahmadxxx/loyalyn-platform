@@ -1,4 +1,4 @@
-# Upgrade an existing Loyalyn installation to 5.0.0
+# Upgrade an existing Loyalyn installation to 5.1.0
 
 Version 5 preserves the PostgreSQL volume and all existing brands, customers, users, permissions, balances, stamp history, Wallet configuration, campaigns and audit records. It adds card templates, ordered template-program links, customer card assignment and reversible stamp transactions.
 
@@ -20,7 +20,7 @@ sudo ./deploy/upgrade.sh
 Expected version:
 
 ```text
-5.0.0
+5.1.0
 ```
 
 The upgrade script:
@@ -30,7 +30,7 @@ The upgrade script:
 3. creates source and PostgreSQL backups under `/opt/loyalyn-backups`;
 4. widens `alembic_version.version_num` to `VARCHAR(128)` when the table exists;
 5. builds API, worker and web images;
-6. applies Alembic through `0004_card_templates`;
+6. applies Alembic through `0005_stamp_customization`;
 7. starts services without deleting named volumes;
 8. waits for API and frontend health checks.
 
@@ -65,7 +65,7 @@ docker compose exec -T db psql \
 Expected Alembic head:
 
 ```text
-0004_card_templates
+0005_stamp_customization
 ```
 
 Then verify in the UI:

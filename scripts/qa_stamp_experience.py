@@ -151,7 +151,7 @@ async def main():
             assert dashboard["stamp_rewards_redeemed"] == 1
 
             print(json.dumps({
-                "ok": True, "version": "5.0.0", "brand": brand_id,
+                "ok": True, "version": "5.1.0", "brand": brand_id,
                 "programs": ["coffee", "sweet"], "independent_balances": True,
                 "public_join": True, "stable_qr": True, "fast_scan": True,
                 "legacy_features_preserved_after_mode_switch": True,

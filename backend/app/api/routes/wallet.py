@@ -18,7 +18,7 @@ from app.models import (
 from app.schemas.common import WalletDesignUpdate, WalletPushToken
 from app.services.audit import add_audit
 from app.services.capabilities import brand_capabilities
-from app.services.cards import active_template_for_customer, customer_template_cards, published_design, template_out
+from app.services.cards import active_template_for_customer, customer_template_cards, program_summary, published_design, template_out
 from app.services.wallet import active_credential, generate_pkpass_bytes, public_wallet_status, validate_and_extract_certificate
 
 router = APIRouter()
@@ -44,6 +44,16 @@ def credential_out(x: PlatformWalletCredential | None) -> dict:
         "expires_at": x.expires_at, "status": x.status, "is_active": x.is_active,
         "created_at": x.created_at,
     }
+
+
+def wallet_program_out(program: StampProgram) -> dict:
+    data = program_summary(program)
+    data.update({
+        "card_asset_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/card" if program.card_image_url else None,
+        "empty_stamp_asset_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/empty_stamp" if program.empty_stamp_image_url else None,
+        "filled_stamp_asset_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/filled_stamp" if program.filled_stamp_image_url else None,
+    })
+    return data
 
 
 def design_out(x: BrandWalletDesign) -> dict:
@@ -83,10 +93,12 @@ async def pass_entities(db: AsyncSession, wallet_pass: WalletPass):
         wallet_pass.card_template_id = template.id
     template, stamp_rows = await customer_template_cards(db, customer)
     customer._wallet_stamp_cards = [
-        {
-            "id": str(program.id), "name": program.name, "stamps": card.stamps,
-            "required_stamps": program.required_stamps, "rewards_available": card.rewards_available,
-        } for card, program in stamp_rows
+        wallet_program_out(program)
+        | {
+            "stamps": card.stamps,
+            "rewards_available": card.rewards_available,
+        }
+        for card, program in stamp_rows
     ]
     credential = await active_credential(db)
     if not credential:
@@ -382,7 +394,14 @@ async def public_card(token: str, db: AsyncSession = Depends(get_db)):
     return {
         "brand": {"name": brand.name, "slug": brand.slug, "logo_url": brand.logo_url, "primary_color": brand.primary_color, "accent_color": brand.accent_color, "program_mode": brand.program_mode},
         "customer": {"name": customer.name, "points": customer.points, "stamps": customer.stamps, "rewards": customer.available_rewards, "tier": customer.tier, "membership_code": customer.membership_code},
-        "stamp_cards": [{"id": str(program.id), "name": program.name, "stamps": card.stamps, "required_stamps": program.required_stamps, "rewards_available": card.rewards_available, "background_color": program.background_color, "accent_color": program.accent_color, "stamp_icon": program.stamp_icon} for card, program in stamp_rows],
+        "stamp_cards": [
+            wallet_program_out(program)
+            | {
+                "stamps": card.stamps,
+                "rewards_available": card.rewards_available,
+            }
+            for card, program in stamp_rows
+        ],
         "card_template": await template_out(db, template, include_usage=False, published_view=True),
         "design": await template_out(db, template, include_usage=False, published_view=True),
         "wallet": wallet,

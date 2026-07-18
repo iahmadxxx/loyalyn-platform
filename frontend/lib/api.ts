@@ -10,7 +10,7 @@ async function request(path: string, opts: RequestInit = {}, retry = true): Prom
   const headers = new Headers(opts.headers)
   const bodyIsForm = typeof FormData !== 'undefined' && opts.body instanceof FormData
   if (!bodyIsForm && opts.body !== undefined) headers.set('Content-Type', 'application/json')
-  headers.set('X-Loyalyn-Client', 'web-v5.0.0')
+  headers.set('X-Loyalyn-Client', 'web-v5.1.0')
   const csrf = decodeURIComponent(cookie('loyalyn_csrf'))
   if (csrf && !['GET', 'HEAD', 'OPTIONS'].includes(String(opts.method || 'GET').toUpperCase())) {
     headers.set('X-Loyalyn-CSRF', csrf)

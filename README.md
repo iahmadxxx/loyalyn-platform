@@ -1,4 +1,4 @@
-# Loyalyn 5.0.0
+# Loyalyn 5.1.0
 
 Loyalyn is a multi-brand loyalty operating system built with FastAPI, PostgreSQL, Next.js and Docker Compose. Version 5 adds a complete card-template layer: one customer Wallet card can contain several independent stamp programs, while each brand can publish multiple card combinations such as Coffee only, Coffee + Sweet, Breakfast or VIP.
 

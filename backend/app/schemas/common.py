@@ -201,7 +201,7 @@ class WalletDesignUpdate(BaseModel):
     hero_url: str | None = None
     background_image_url: str | None = None
     strip_url: str | None = None
-    layout_style: str = Field(default="classic", pattern=r"^(classic|visual|minimal)$")
+    layout_style: str = Field(default="classic", pattern=r"^(classic|visual|minimal|luxury|product|light|dark)$")
     overlay_opacity: int = Field(default=25, ge=0, le=90)
     barcode_format: str = Field(default="PKBarcodeFormatQR", pattern=r"^(PKBarcodeFormatQR|PKBarcodeFormatPDF417|PKBarcodeFormatAztec|PKBarcodeFormatCode128)$")
     fields: dict = Field(default_factory=dict)
@@ -314,6 +314,22 @@ class StampProgramCreate(BaseModel):
     stamp_icon: str = Field(default="coffee", min_length=1, max_length=40)
     background_color: str = Field(default="#111827", pattern=r"^#[0-9A-Fa-f]{6}$")
     accent_color: str = Field(default="#C6FF4A", pattern=r"^#[0-9A-Fa-f]{6}$")
+    settings: dict = Field(default_factory=lambda: {
+        "display_mode": "icons_and_count",
+        "stamp_shape": "circle",
+        "empty_style": "outline",
+        "filled_style": "solid",
+        "icon_size": "medium",
+        "allow_multiple": True,
+        "max_per_action": 5,
+        "daily_limit": None,
+        "carry_over": True,
+        "show_reward_title": True,
+        "show_on_wallet_front": True,
+        "allowed_branch_ids": [],
+        "starts_at": None,
+        "ends_at": None,
+    })
     is_default: bool = False
     sort_order: int = Field(default=0, ge=0, le=1000)
 
@@ -333,6 +349,7 @@ class StampProgramUpdate(BaseModel):
     stamp_icon: str | None = Field(default=None, min_length=1, max_length=40)
     background_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     accent_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
+    settings: dict | None = None
     is_default: bool | None = None
     sort_order: int | None = Field(default=None, ge=0, le=1000)
     is_active: bool | None = None
@@ -341,6 +358,10 @@ class StampProgramUpdate(BaseModel):
     @classmethod
     def normalize_optional_stamp_slug(cls, value: str | None) -> str | None:
         return value.strip().lower() if value else value
+
+
+class StampProgramReorder(BaseModel):
+    program_ids: list[UUID] = Field(min_length=1, max_length=500)
 
 
 class StampAction(BaseModel):
@@ -380,7 +401,7 @@ class CardTemplateCreate(BaseModel):
     label_color: str = Field(default="#C6FF4A", pattern=r"^#[0-9A-Fa-f]{6}$")
     logo_text: str = Field(default="LOYALYN", min_length=1, max_length=120)
     card_title: str = Field(default="بطاقة الولاء", min_length=1, max_length=120)
-    layout_style: str = Field(default="classic", pattern=r"^(classic|visual|minimal)$")
+    layout_style: str = Field(default="classic", pattern=r"^(classic|visual|minimal|luxury|product|light|dark)$")
     overlay_opacity: int = Field(default=25, ge=0, le=90)
     barcode_format: str = Field(default="PKBarcodeFormatQR", pattern=r"^(PKBarcodeFormatQR|PKBarcodeFormatPDF417|PKBarcodeFormatAztec|PKBarcodeFormatCode128)$")
     fields: dict = Field(default_factory=lambda: {"show_stamps": True, "show_rewards": True, "show_tier": False, "show_points": False, "show_visits": False})
@@ -406,7 +427,7 @@ class CardTemplateUpdate(BaseModel):
     label_color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     logo_text: str | None = Field(default=None, min_length=1, max_length=120)
     card_title: str | None = Field(default=None, min_length=1, max_length=120)
-    layout_style: str | None = Field(default=None, pattern=r"^(classic|visual|minimal)$")
+    layout_style: str | None = Field(default=None, pattern=r"^(classic|visual|minimal|luxury|product|light|dark)$")
     overlay_opacity: int | None = Field(default=None, ge=0, le=90)
     barcode_format: str | None = Field(default=None, pattern=r"^(PKBarcodeFormatQR|PKBarcodeFormatPDF417|PKBarcodeFormatAztec|PKBarcodeFormatCode128)$")
     fields: dict | None = None

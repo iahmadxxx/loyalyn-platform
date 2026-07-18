@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Loyalyn"
-    app_version: str = "5.0.0"
+    app_version: str = "5.1.0"
     environment: str = "production"
     database_url: str = "postgresql+asyncpg://loyalyn:change_me@db:5432/loyalyn"
     jwt_secret: str = "replace_me_with_a_long_random_secret"

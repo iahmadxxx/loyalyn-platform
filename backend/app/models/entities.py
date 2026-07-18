@@ -215,6 +215,7 @@ class StampProgram(UUIDTimestampMixin, Base):
     card_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     empty_stamp_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     filled_stamp_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

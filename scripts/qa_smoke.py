@@ -300,7 +300,7 @@ async def main():
             print(json.dumps({
                 "ok": True, "brands": 2, "manager_brand_access": 2, "customer": customer_id,
                 "coupon": coupon["code"], "campaign": campaign["status"], "audit_entries": len(audit),
-                "version": "5.0.0", "security_checks": ["tenant_isolation", "central_wallet_forbidden", "password_preserved", "cross_branch_rejected", "employee_branch_scope", "employee_customer_privacy", "permission_revocation", "password_session_revocation", "campaign_audience_isolation"],
+                "version": "5.1.0", "security_checks": ["tenant_isolation", "central_wallet_forbidden", "password_preserved", "cross_branch_rejected", "employee_branch_scope", "employee_customer_privacy", "permission_revocation", "password_session_revocation", "campaign_audience_isolation"],
             }, ensure_ascii=False))
 
 
