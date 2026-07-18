@@ -1,106 +1,47 @@
 'use client'
 
-import {
-  LayoutDashboard, Building2, MapPin, Users, UserCog, SlidersHorizontal,
-  WalletCards, Bell, ScrollText, ShieldCheck, LogOut, Menu, X, Stamp,
-  ScanLine, ChevronLeft, CreditCard, MoreHorizontal
-} from 'lucide-react'
+import {CreditCard, LogOut, Menu, ScanLine, ScrollText, Settings, Users, X} from 'lucide-react'
 import {useEffect, useMemo, useState} from 'react'
 import {logout} from '@/lib/api'
 
-type NavItem = {
-  id:string
-  label:string
-  icon:any
-  permission?:string
-  capability?:string
-}
+type Item={id:string;label:string;icon:any}
 
-const baseItems:NavItem[]=[
-  {id:'overview',label:'نظرة عامة',icon:LayoutDashboard},
-  {id:'brands',label:'البراندات',icon:Building2,permission:'brand.manage'},
-  {id:'branches',label:'الفروع',icon:MapPin,permission:'branches.view'},
-  {id:'customers',label:'العملاء',icon:Users,permission:'customers.view'},
-  {id:'staff',label:'الموظفون',icon:UserCog,permission:'staff.view'},
-  {id:'cards',label:'البطاقات',icon:CreditCard,permission:'loyalty.manage',capability:'stamps'},
-  {id:'stamp-cards',label:'برامج الأختام',icon:Stamp,permission:'loyalty.manage',capability:'stamps'},
-  {id:'scan',label:'السكان السريع',icon:ScanLine,permission:'fast_scan.use',capability:'fast_scan'},
-  {id:'loyalty',label:'محرك الولاء',icon:SlidersHorizontal,permission:'loyalty.manage'},
-  {id:'wallet',label:'استوديو البطاقة',icon:WalletCards,permission:'wallet.design',capability:'wallet'},
-  {id:'campaigns',label:'الإشعارات والحملات',icon:Bell,permission:'campaigns.view',capability:'campaigns'},
-  {id:'audit',label:'سجل التدقيق',icon:ScrollText,permission:'audit.view'},
-]
-
-export function Shell({children,active,onChange,role,accessRole,userName,brandName,capabilities,permissions}: {
+export function Shell({children,active,onChange,userName,brandName}:{
   children:React.ReactNode
   active:string
   onChange:(value:string)=>void
-  role:string
+  role?:string
   accessRole?:string
   userName:string
   brandName?:string
   capabilities?:Record<string,boolean>
   permissions?:Record<string,boolean>
-}) {
-  const [mobileOpen,setMobileOpen]=useState(false)
-  const caps=capabilities||{}
-  const perms=permissions||{}
-  const isPlatform=role==='platform_owner'
-  const can=(permission?:string)=>!permission||isPlatform||perms['*']===true||perms[permission]===true
-
-  const items=useMemo(()=>{
-    let visible=baseItems.filter(item=>{
-      if(!can(item.permission))return false
-      if(item.capability&&caps[item.capability]===false)return false
-      if(item.id==='loyalty'&&!caps.points&&!caps.cashback&&!caps.tiers&&!caps.coupons&&!caps.stamps)return false
-      return true
-    })
-    if(isPlatform)visible=[...visible,{id:'platform-wallet',label:'شهادة Apple المركزية',icon:ShieldCheck}]
-    else visible=visible.map(item=>item.id==='brands'?{...item,label:'إعدادات البراند'}:item)
-    return visible
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[role,accessRole,JSON.stringify(caps),JSON.stringify(perms)])
-
-  useEffect(()=>{setMobileOpen(false)},[active])
-  useEffect(()=>{
-    document.body.style.overflow=mobileOpen?'hidden':''
-    return()=>{document.body.style.overflow=''}
-  },[mobileOpen])
-  useEffect(()=>{
-    if(active!=='overview'&&!items.some(item=>item.id===active))onChange('overview')
-  },[active,items,onChange])
-
-  const choose=(id:string)=>{onChange(id);setMobileOpen(false)}
-  const scanVisible=items.some(item=>item.id==='scan')
-  const bottomItems=[
-    {id:'overview',label:'الرئيسية',icon:LayoutDashboard},
-    ...(scanVisible?[{id:'scan',label:'السكان',icon:ScanLine}]:[]),
-    ...(items.some(item=>item.id==='customers')?[{id:'customers',label:'العملاء',icon:Users}]:[]),
-    ...(items.some(item=>item.id==='cards')?[{id:'cards',label:'البطاقات',icon:CreditCard}]:[]),
-  ].slice(0,4)
-
-  return <div className="app-shell grid-bg">
-    <header className="mobile-header">
-      <button className="mobile-menu-btn" type="button" onClick={()=>setMobileOpen(true)} aria-label="فتح القائمة"><Menu/></button>
-      <div className="mobile-brand"><b>LOYALYN<span>.</span></b><small>{brandName||'إدارة المنصة'}</small></div>
-      {scanVisible?<button className="mobile-scan-btn" type="button" onClick={()=>choose('scan')} aria-label="السكان السريع"><ScanLine/></button>:<span className="mobile-header-spacer"/>}
+}){
+  const [open,setOpen]=useState(false)
+  const items=useMemo<Item[]>(()=>[
+    {id:'studio',label:'استوديو البطاقات',icon:CreditCard},
+    {id:'customers',label:'العملاء',icon:Users},
+    {id:'scan',label:'السكان السريع',icon:ScanLine},
+    {id:'operations',label:'سجل العمليات',icon:ScrollText},
+    {id:'settings',label:'الإعدادات',icon:Settings},
+  ],[])
+  useEffect(()=>setOpen(false),[active])
+  const choose=(id:string)=>{onChange(id);setOpen(false)}
+  return <div className="v6-shell">
+    <header className="v6-mobile-head">
+      <button onClick={()=>setOpen(true)} aria-label="فتح القائمة"><Menu/></button>
+      <div><b>{brandName||'LOYALYN'}</b><small>STAMP STUDIO</small></div>
+      <button onClick={()=>choose('scan')} aria-label="السكان السريع"><ScanLine/></button>
     </header>
-
-    {mobileOpen&&<button type="button" className="sidebar-overlay" aria-label="إغلاق القائمة" onClick={()=>setMobileOpen(false)}/>} 
-    <aside className={`sidebar ${mobileOpen?'open':''}`}>
-      <button className="sidebar-close" type="button" onClick={()=>setMobileOpen(false)} aria-label="إغلاق القائمة"><X/></button>
-      <div>
-        <div className="sidebar-logo">LOYALYN<span>.</span></div>
-        <p className="sidebar-kicker">LOYALTY OPERATING SYSTEM</p>
-        <div className="user-chip mt-6"><div className="avatar">{userName?.[0]||'L'}</div><div><b>{userName}</b><small>{brandName||'إدارة المنصة'}</small></div></div>
-      </div>
-      <nav className="sidebar-nav">{items.map(({id,label,icon:Icon})=><button key={id} type="button" onClick={()=>choose(id)} className={`nav-btn ${active===id?'active':''}`}><Icon size={18}/><span>{label}</span><ChevronLeft size={15} className="nav-arrow"/></button>)}</nav>
-      <button type="button" onClick={()=>void logout()} className="nav-btn danger"><LogOut size={18}/><span>تسجيل الخروج</span></button>
+    {open&&<button className="v6-overlay" aria-label="إغلاق" onClick={()=>setOpen(false)}/>} 
+    <aside className={`v6-sidebar ${open?'open':''}`}>
+      <button className="v6-close" onClick={()=>setOpen(false)} aria-label="إغلاق"><X/></button>
+      <div className="v6-brand"><strong>{brandName||'LOYALYN'}</strong><span>STAMP STUDIO</span></div>
+      <div className="v6-user"><i>{userName?.[0]||'L'}</i><div><b>{userName}</b><small>إدارة بطاقات البراند</small></div></div>
+      <nav>{items.map(({id,label,icon:Icon})=><button key={id} className={active===id?'active':''} onClick={()=>choose(id)}><Icon size={19}/><span>{label}</span></button>)}</nav>
+      <button className="v6-logout" onClick={()=>void logout()}><LogOut size={19}/><span>تسجيل الخروج</span></button>
     </aside>
-    <main className="app-main">{children}</main>
-    <nav className="mobile-bottom-nav" aria-label="التنقل السريع">
-      {bottomItems.map(({id,label,icon:Icon})=><button key={id} type="button" onClick={()=>choose(id)} className={active===id?'active':''}><Icon size={19}/><span>{label}</span></button>)}
-      <button type="button" onClick={()=>setMobileOpen(true)} className={mobileOpen?'active':''}><MoreHorizontal size={20}/><span>المزيد</span></button>
-    </nav>
+    <main className="v6-main">{children}</main>
+    <nav className="v6-bottom">{items.slice(0,4).map(({id,label,icon:Icon})=><button key={id} className={active===id?'active':''} onClick={()=>choose(id)}><Icon/><span>{label}</span></button>)}</nav>
   </div>
 }

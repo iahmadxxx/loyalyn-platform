@@ -140,6 +140,175 @@ def render_asset(source: str | None, size: tuple[int, int], *, contain: bool = T
         return buffer.getvalue()
 
 
+
+def _hex_rgba(value: str | None, alpha: int = 255) -> tuple[int, int, int, int]:
+    raw = (value or "#111827").lstrip("#")
+    if len(raw) != 6:
+        raw = "111827"
+    return int(raw[:2], 16), int(raw[2:4], 16), int(raw[4:6], 16), max(0, min(255, alpha))
+
+
+def _asset_image(source: str | None) -> Image.Image | None:
+    if not source or not source.startswith("storage://"):
+        return None
+    path = Path(source.removeprefix("storage://"))
+    if not path.exists():
+        return None
+    try:
+        with Image.open(path) as opened:
+            return opened.convert("RGBA")
+    except Exception:
+        return None
+
+
+def _fit_stamp_asset(
+    source: str | None,
+    box_size: int,
+    *,
+    fit: str = "contain",
+    offset_x: int = 0,
+    offset_y: int = 0,
+    opacity: int = 100,
+) -> Image.Image | None:
+    image = _asset_image(source)
+    if image is None:
+        return None
+    if fit == "cover":
+        fitted = ImageOps.fit(image, (box_size, box_size), method=Image.Resampling.LANCZOS)
+    else:
+        fitted = image.copy()
+        fitted.thumbnail((box_size, box_size), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", (box_size, box_size), (0, 0, 0, 0))
+        canvas.alpha_composite(fitted, ((box_size - fitted.width) // 2, (box_size - fitted.height) // 2))
+        fitted = canvas
+    if opacity < 100:
+        alpha = fitted.getchannel("A").point(lambda value: int(value * max(0, opacity) / 100))
+        fitted.putalpha(alpha)
+    if offset_x or offset_y:
+        canvas = Image.new("RGBA", (box_size, box_size), (0, 0, 0, 0))
+        canvas.alpha_composite(fitted, (int(offset_x), int(offset_y)))
+        fitted = canvas
+    return fitted
+
+
+def _draw_default_stamp(
+    canvas: Image.Image,
+    xy: tuple[int, int, int, int],
+    *,
+    icon: str,
+    color: str,
+    completed: bool,
+    empty_opacity: int = 35,
+) -> None:
+    draw = ImageDraw.Draw(canvas)
+    x0, y0, x1, y1 = xy
+    width = max(1, x1 - x0)
+    fill = _hex_rgba(color, 255 if completed else int(255 * max(10, min(100, empty_opacity)) / 100))
+    outline = _hex_rgba(color, 255)
+    stroke = max(1, width // 18)
+    if icon in {"coffee", "cup", "drink"}:
+        body = (x0 + width * 0.18, y0 + width * 0.30, x0 + width * 0.72, y0 + width * 0.75)
+        if completed:
+            draw.rounded_rectangle(body, radius=width * 0.08, fill=fill)
+        else:
+            draw.rounded_rectangle(body, radius=width * 0.08, outline=outline, width=stroke)
+        draw.arc((x0 + width * 0.58, y0 + width * 0.36, x0 + width * 0.92, y0 + width * 0.68), -80, 80, fill=outline, width=stroke)
+        draw.line((x0 + width * 0.16, y0 + width * 0.82, x0 + width * 0.78, y0 + width * 0.82), fill=outline, width=stroke)
+        for shift in (0.32, 0.52):
+            draw.arc((x0 + width * shift, y0 + width * 0.05, x0 + width * (shift + 0.18), y0 + width * 0.36), 80, 270, fill=outline, width=stroke)
+    elif icon in {"cake", "sweet", "dessert"}:
+        points = [(x0 + width * 0.14, y0 + width * 0.72), (x0 + width * 0.78, y0 + width * 0.72), (x0 + width * 0.67, y0 + width * 0.28), (x0 + width * 0.25, y0 + width * 0.38)]
+        if completed:
+            draw.polygon(points, fill=fill)
+        else:
+            draw.line(points + [points[0]], fill=outline, width=stroke, joint="curve")
+        draw.line((x0 + width * 0.24, y0 + width * 0.52, x0 + width * 0.72, y0 + width * 0.46), fill=outline, width=stroke)
+        draw.ellipse((x0 + width * 0.58, y0 + width * 0.12, x0 + width * 0.72, y0 + width * 0.26), fill=outline)
+    else:
+        inset = width * 0.16
+        if completed:
+            draw.ellipse((x0 + inset, y0 + inset, x1 - inset, y1 - inset), fill=fill)
+        else:
+            draw.ellipse((x0 + inset, y0 + inset, x1 - inset, y1 - inset), outline=outline, width=stroke)
+
+
+def make_dynamic_stamp_strip(customer: Customer, design: Any, size: tuple[int, int]) -> bytes | None:
+    """Render the stamp area as one deterministic Apple strip image.
+
+    Custom uploaded symbols are fitted into fixed slots.  Size and offsets are
+    applied inside each slot, so a logo can never jump above or below the stamp
+    row.  This is the same renderer used by the live studio preview.
+    """
+    stamp_cards = list(getattr(customer, "_wallet_stamp_cards", []) or [])[:2]
+    if not stamp_cards:
+        return None
+    width, height = size
+    scale = width / 375
+    fields = dict(getattr(design, "fields", {}) or {})
+    panel = _hex_rgba(fields.get("stamp_panel_color", "#FFFFFF"))
+    text_color = _hex_rgba(fields.get("stamp_panel_text_color", "#766C63"))
+    canvas = Image.new("RGBA", size, panel)
+    draw = ImageDraw.Draw(canvas)
+    title = str(fields.get("stamp_panel_title", "LOYALTY CARD"))[:36]
+    font = _font(max(11, int(15 * scale)))
+    title_box = draw.textbbox((0, 0), title, font=font)
+    draw.text(((width - (title_box[2] - title_box[0])) / 2, int(7 * scale)), title, fill=text_color, font=font)
+    draw.line((int(70 * scale), int(17 * scale), int(130 * scale), int(17 * scale)), fill=_hex_rgba(fields.get("stamp_line_color", "#B7AEA7")), width=max(1, int(scale)))
+    draw.line((int(245 * scale), int(17 * scale), int(305 * scale), int(17 * scale)), fill=_hex_rgba(fields.get("stamp_line_color", "#B7AEA7")), width=max(1, int(scale)))
+
+    top = int(28 * scale)
+    available_height = height - top - int(7 * scale)
+    row_height = available_height // len(stamp_cards)
+    progress_font = _font(max(9, int(11 * scale)))
+    for row_index, card in enumerate(stamp_cards):
+        total = max(1, min(14, int(card.get("required_stamps") or 1)))
+        completed = max(0, min(total, int(card.get("stamps") or 0)))
+        options = dict(card.get("display_options") or {})
+        gap = max(2, min(24, int(options.get("gap", 8)))) * scale
+        left_pad = int(13 * scale)
+        right_pad = int(13 * scale)
+        max_icon_by_width = (width - left_pad - right_pad - gap * (total - 1)) / total
+        requested = max(18, min(72, int(options.get("icon_size", 42)))) * scale
+        icon_size = int(max(12 * scale, min(requested, max_icon_by_width, row_height * 0.72)))
+        total_width = icon_size * total + gap * (total - 1)
+        start_x = int((width - total_width) / 2)
+        row_y = top + row_index * row_height
+        icon_y = int(row_y + max(0, (row_height - icon_size) / 2))
+        fit = str(options.get("fit", "contain"))
+        offset_x = int(options.get("offset_x", 0) * scale)
+        offset_y = int(options.get("offset_y", 0) * scale)
+        empty_opacity = max(10, min(100, int(options.get("empty_opacity", 35))))
+        for index in range(total):
+            x = int(start_x + index * (icon_size + gap))
+            is_filled = index < completed
+            source = card.get("filled_stamp_image_url") if is_filled else card.get("empty_stamp_image_url")
+            image = _fit_stamp_asset(
+                source,
+                icon_size,
+                fit=fit,
+                offset_x=offset_x,
+                offset_y=offset_y,
+                opacity=100 if is_filled else empty_opacity,
+            )
+            if image is not None:
+                canvas.alpha_composite(image, (x, icon_y))
+            else:
+                _draw_default_stamp(
+                    canvas,
+                    (x, icon_y, x + icon_size, icon_y + icon_size),
+                    icon=str(card.get("stamp_icon") or "coffee"),
+                    color=str(card.get("accent_color") or getattr(design, "label_color", "#C6FF4A")),
+                    completed=is_filled,
+                    empty_opacity=empty_opacity,
+                )
+        progress = f"{completed}/{total}"
+        box = draw.textbbox((0, 0), progress, font=progress_font)
+        draw.text((width - int(9 * scale) - (box[2] - box[0]), row_y + 1), progress, fill=text_color, font=progress_font)
+    buffer = BytesIO()
+    canvas.convert("RGB").save(buffer, format="PNG", optimize=True)
+    return buffer.getvalue()
+
+
 def build_pass_json(
     *, credential: PlatformWalletCredential, brand: Brand, customer: Customer,
     design: Any, wallet_pass: WalletPass,
@@ -243,9 +412,15 @@ def generate_pkpass_bytes(
         logo2 = render_asset(design.logo_url, (320, 100), contain=True)
         (root / "logo.png").write_bytes(logo or make_icon(brand.name, design.background_color, design.foreground_color, 80))
         (root / "logo@2x.png").write_bytes(logo2 or make_icon(brand.name, design.background_color, design.foreground_color, 160))
-        strip_source = getattr(design, "strip_url", None) or design.hero_url or getattr(design, "background_image_url", None)
-        strip = render_asset(strip_source, (375, 123), contain=False)
-        strip2 = render_asset(strip_source, (750, 246), contain=False)
+        fields = dict(getattr(design, "fields", {}) or {})
+        use_dynamic_stamps = bool(getattr(customer, "_wallet_stamp_cards", [])) and fields.get("render_stamp_strip", True)
+        if use_dynamic_stamps:
+            strip = make_dynamic_stamp_strip(customer, design, (375, 123))
+            strip2 = make_dynamic_stamp_strip(customer, design, (750, 246))
+        else:
+            strip_source = getattr(design, "strip_url", None) or design.hero_url or getattr(design, "background_image_url", None)
+            strip = render_asset(strip_source, (375, 123), contain=False)
+            strip2 = render_asset(strip_source, (750, 246), contain=False)
         if strip and strip2:
             (root / "strip.png").write_bytes(strip)
             (root / "strip@2x.png").write_bytes(strip2)

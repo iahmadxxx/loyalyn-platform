@@ -1,10 +1,10 @@
-# Upgrade an existing Loyalyn installation to 5.1.0
+# Upgrade Loyalyn to 6.0.0
 
-Version 5 preserves the PostgreSQL volume and all existing brands, customers, users, permissions, balances, stamp history, Wallet configuration, campaigns and audit records. It adds card templates, ordered template-program links, customer card assignment and reversible stamp transactions.
+Version 6 preserves the PostgreSQL volume, brands, customers, stamp balances, operations, employees, permissions, Wallet credentials and issued-pass history. It adds multi-card customer assignments, per-card Wallet passes and exact stamp presentation settings.
 
-## Recommended upgrade
+## Upgrade commands
 
-After uploading the V5 files to the existing repository:
+After uploading the V6 files to GitHub:
 
 ```bash
 cd /opt/loyalyn
@@ -20,33 +20,22 @@ sudo ./deploy/upgrade.sh
 Expected version:
 
 ```text
-5.1.0
+6.0.0
 ```
 
-The upgrade script:
+Expected Alembic head:
 
-1. validates `.env` and Docker Compose;
-2. records the current Git revision;
-3. creates source and PostgreSQL backups under `/opt/loyalyn-backups`;
-4. widens `alembic_version.version_num` to `VARCHAR(128)` when the table exists;
-5. builds API, worker and web images;
-6. applies Alembic through `0005_stamp_customization`;
-7. starts services without deleting named volumes;
-8. waits for API and frontend health checks.
+```text
+0005_single_brand_studio
+```
+
+The upgrade script creates source and PostgreSQL backups under `/opt/loyalyn-backups`, rebuilds API/worker/web and starts services without deleting named volumes.
 
 Never run:
 
 ```bash
 docker compose down -v
 ```
-
-## Data migration behavior
-
-- Existing brands receive a default published card template when first needed.
-- Existing stamp programs remain available and are linked compatibly to the default template.
-- Existing customer stamp balances and transactions are preserved.
-- New template assignments do not create duplicate customer records.
-- Archived templates/programs retain historical references.
 
 ## Post-upgrade checks
 
@@ -62,21 +51,15 @@ docker compose exec -T db psql \
   -c "SELECT version_num FROM alembic_version;"
 ```
 
-Expected Alembic head:
+## Functional acceptance
 
-```text
-0005_stamp_customization
-```
-
-Then verify in the UI:
-
-1. create a Coffee-only card template;
-2. create a Coffee + Sweet template and order both programs;
-3. save draft changes and confirm customers still see the published version;
-4. publish the template;
-5. enroll a test customer from the public QR;
-6. scan the customer and add one Coffee stamp;
-7. reverse the accidental test operation and confirm the exact previous value returns;
-8. confirm a program outside the assigned card cannot be stamped;
-9. test Cards, Programs, Fast Scan and Wallet Studio on a phone;
-10. upload/test the real Apple certificate only from the platform-owner account.
+1. Open `استوديو البطاقات`.
+2. Create Coffee, Sweet and Coffee + Sweet cards.
+3. Upload a wide or square custom stamp image and verify it remains inside its slot in the live preview.
+4. Publish all three cards.
+5. Register a customer without a card.
+6. Open the customer and activate all three cards.
+7. Issue each Wallet card and copy its individual link.
+8. Scan the membership code and confirm all active cards appear together.
+9. Add and reverse a test stamp.
+10. Test a real pass on iPhone using the production Apple certificate.

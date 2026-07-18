@@ -215,7 +215,7 @@ class StampProgram(UUIDTimestampMixin, Base):
     card_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     empty_stamp_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     filled_stamp_image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-    settings: Mapped[dict] = mapped_column(JSON, default=dict)
+    display_options: Mapped[dict] = mapped_column(JSON, default=dict)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -305,9 +305,11 @@ class CardTemplateProgram(UUIDTimestampMixin, Base):
 class CustomerCardAssignment(UUIDTimestampMixin, Base):
     __tablename__ = "customer_card_assignments"
     brand_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
-    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"), unique=True, index=True)
+    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"), index=True)
     card_template_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("card_templates.id", ondelete="RESTRICT"), index=True)
     assigned_by_actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    __table_args__ = (UniqueConstraint("customer_id", "card_template_id", name="uq_customer_card_template"),)
 
 
 class BrandWalletDesign(UUIDTimestampMixin, Base):
@@ -360,7 +362,7 @@ class WalletPass(UUIDTimestampMixin, Base):
     update_tag: Mapped[int] = mapped_column(Integer, default=1, index=True)
     last_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    __table_args__ = (UniqueConstraint("brand_id", "customer_id", name="uq_wallet_pass_customer"),)
+    __table_args__ = (UniqueConstraint("customer_id", "card_template_id", name="uq_wallet_pass_customer_template"),)
 
 
 class WalletDevice(UUIDTimestampMixin, Base):

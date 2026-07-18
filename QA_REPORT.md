@@ -1,75 +1,73 @@
-# Loyalyn 5.1.0 QA Report
+# Loyalyn 6.0.0 QA Report
 
 ## Backend unit tests
 
 ```bash
-PYTHONPATH=backend pytest -q backend/tests
+cd backend
+PYTHONPATH=. pytest -q
 ```
 
-Result: **22 passed**.
+Result: **19 passed**.
 
-## V5 card-template workflow
+## V6 single-brand and multi-card workflow
 
 ```bash
-PYTHONPATH=backend python scripts/qa_card_templates.py
+PYTHONPATH=backend python scripts/qa_single_brand_studio.py
 ```
 
 Verified:
 
-- one active main card per customer;
-- multiple independent stamp programs inside one card;
-- multiple templates in one brand;
-- draft changes do not leak before publication;
-- safe stamp reversal and preserved audit history;
-- archive, restore and safe-delete behavior;
-- rejection of a stamp program outside the customer's assigned template.
+- public registration can complete before card assignment;
+- an admin-created customer can start with no card;
+- Coffee, Sweet and Coffee + Sweet cards can all stay active for one customer;
+- every card produces a distinct Wallet pass/link;
+- the combination pass contains both independent programs;
+- uploaded oversized stamp artwork is rendered into the fixed Wallet strip;
+- generated `.pkpass` files contain valid signed ZIP payloads, `strip.png` at `375×123` and `strip@2x.png` at `750×246`;
+- removing one assignment keeps the remaining cards active.
 
-## Existing-platform regressions
+## Regression suites
 
-The following all passed:
+All passed:
 
 ```bash
-PYTHONPATH=backend python scripts/qa_smoke.py
+PYTHONPATH=backend python scripts/qa_card_templates.py
 PYTHONPATH=backend python scripts/qa_stamp_experience.py
 PYTHONPATH=backend python scripts/qa_public_wallet_join.py
 PYTHONPATH=backend python scripts/qa_security_sessions.py
+PYTHONPATH=backend python scripts/qa_smoke.py
 PYTHONPATH=backend python scripts/qa_legacy_migration.py
 ```
 
-These cover tenant isolation, multi-brand access, employee branch scope/privacy, feature gates, Coffee/Sweet balances, public join, real signed test `.pkpass` delivery, secure sessions, CSRF/logout revocation and preservation of legacy users/customer balances.
+Coverage includes tenant isolation, branch/employee permissions, public legacy join compatibility, signed test `.pkpass` delivery, secure cookies/CSRF/logout, reversible stamp operations and upgrading an old database through the new migration.
 
 ## Alembic
 
-- Legacy schema upgraded successfully through `0005_stamp_customization`.
-- A clean isolated database upgraded to head `0005_stamp_customization`.
-- Clean schema contained **30 tables** and all V5 card/assignment/transaction tables.
-- Migration 0004 includes existence guards because the original foundation migration bootstraps old databases from current metadata.
+Legacy SQLite migration QA successfully upgraded through:
+
+```text
+0001_loyalyn_v3
+0002_program_profiles_stamp_experience
+0003_security_sessions
+0004_card_templates
+0005_single_brand_studio
+```
 
 ## Frontend
 
 ```bash
 cd frontend
 npm run lint
-NEXT_PUBLIC_API_URL=https://api.loyalyn.site npm run build
+npm run build
 ```
 
 - TypeScript validation passed.
 - Next.js 15.4.10 production build passed.
-- Generated routes include `/admin`, `/employee`, `/join/[slug]`, `/card/[token]` and `/login`.
-- OpenAPI reports version `5.1.0` with **84 paths**.
+- Generated routes include `/admin`, `/join/[slug]`, `/card/[token]`, `/employee` and `/login`.
+- OpenAPI reports version `6.0.0` with **84 paths**.
 
-## Responsive acceptance
+## Browser and Apple acceptance
 
-The release contains the automated Playwright mobile smoke test (`scripts/qa_mobile_ui.py`) and the responsive styles/components for the V5 Cards, Programs, Wallet and Fast Scan screens. The current build environment blocked Chromium navigation to local/private addresses by administrator policy, so the final browser-device acceptance must be run against the deployed test URL. This limitation does not affect the successful TypeScript or production build results.
+The current execution environment blocks Chromium from navigating to localhost with `ERR_BLOCKED_BY_ADMINISTRATOR`, so a real interactive browser screenshot run could not be completed here. The successful production build does not replace final device acceptance.
 
-## External acceptance still required
-
-A real Apple Pass Type certificate, matching WWDR certificate and physical iPhone are required for final Wallet installation and live APNs verification. No Apple private credential is embedded in the release archive.
-
-## 5.1.0 verification
-
-- Python compilation completed successfully.
-- 22 backend unit tests passed, including advanced stamp settings and icon library coverage.
-- TypeScript validation passed with `npx tsc --noEmit`.
-- Next.js production compilation, type checking and static page generation completed; the container environment did not return from the final trace collection step before its execution timeout.
-- The migration chain now ends at `0005_stamp_customization`.
+A real Apple Pass Type certificate, matching WWDR certificate and physical iPhone are required to verify installation and production APNs updates. No private Apple credential is included in the archive.

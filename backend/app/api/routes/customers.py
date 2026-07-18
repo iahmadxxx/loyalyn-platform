@@ -14,7 +14,7 @@ from app.schemas.common import (
 )
 from app.services.audit import add_audit
 from app.services.capabilities import brand_capabilities, loyalty_program_type
-from app.services.cards import assign_template, ensure_default_template
+from app.services.cards import attach_template
 from app.services.loyalty import apply_loyalty, consume_point_buckets, program_dict, recalculate_tier
 from app.services.wallet import push_pass_update
 
@@ -104,18 +104,11 @@ async def create_customer(payload: CustomerCreate, request: Request, db: AsyncSe
     db.add(customer)
     await db.flush()
     brand = await db.get(Brand, payload.brand_id)
-    if brand and brand_capabilities(brand).get("stamps"):
-        template = await db.get(CardTemplate, requested_template_id) if requested_template_id else None
-        if template and (template.brand_id != brand.id or template.status != "published"):
+    if brand and brand_capabilities(brand).get("stamps") and requested_template_id:
+        template = await db.get(CardTemplate, requested_template_id)
+        if not template or template.brand_id != brand.id or template.status != "published":
             raise HTTPException(422, "البطاقة المختارة غير متاحة أو لم تُنشر بعد")
-        if not template:
-            template = await db.scalar(select(CardTemplate).where(
-                CardTemplate.brand_id == brand.id,
-                CardTemplate.status == "published",
-            ).order_by(CardTemplate.is_default.desc(), CardTemplate.sort_order, CardTemplate.created_at))
-        if not template:
-            template = await ensure_default_template(db, brand)
-        await assign_template(db, customer, template, actor_id=user.id)
+        await attach_template(db, customer, template, actor_id=user.id)
     add_audit(db, actor_id=user.id, action="customer_created", entity_type="customer", entity_id=customer.id, brand_id=payload.brand_id, details={"name": customer.name, "phone": customer.phone}, ip_address=request.client.host if request.client else None)
     await db.commit()
     await db.refresh(customer)

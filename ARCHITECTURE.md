@@ -1,92 +1,66 @@
-# Loyalyn 4.1 Architecture
+# Loyalyn 6.0 Architecture
 
-## One tenant-isolated platform
+## Product surface
 
-Each brand stores a `program_mode` and optional `feature_flags`. The resolved capability set controls navigation and API feature gates without deleting disabled-feature data.
+V6 presents a single-brand stamp-card product even though the historical tenant-safe backend remains intact for upgrade compatibility.
 
 ```text
-Platform
-  ├─ Brand A: Stamps only
-  ├─ Brand B: Points only
-  ├─ Brand C: Stamps + points
-  └─ Brand D: Full or Custom
+Brand account
+  ├─ Card Studio
+  │   ├─ Coffee card
+  │   ├─ Sweet card
+  │   └─ Coffee + Sweet card
+  ├─ Customers + card assignment
+  ├─ Fast Scan
+  ├─ Operation/reversal history
+  └─ Wallet certificate/settings
 ```
+
+## Card and stamp records
+
+- `card_templates`: independent draft/published cards and design settings;
+- `card_template_programs`: ordered stamp programs inside each card;
+- `stamp_programs`: targets, rewards, images and exact display options;
+- `customer_card_assignments`: active `(customer, card)` links;
+- `customer_stamp_cards`: balances per customer/program;
+- `wallet_passes`: one pass per `(customer, card)`;
+- `stamp_transactions`: immutable add/redeem/reversal history.
+
+## Wallet rendering
+
+Apple controls the Store Card field layout. Loyalyn therefore converts the stamp area to a deterministic dynamic strip:
+
+```text
+program balances + display options + uploaded art
+  -> fixed slot geometry
+  -> contain/cover + pixel offsets inside each slot
+  -> strip.png 375×123
+  -> strip@2x.png 750×246
+  -> signed .pkpass
+```
+
+The renderer limits front-strip density and keeps complete program details in pass fields/back information.
+
+## Assignment model
+
+A customer may have zero, one or several active card assignments. Attaching or detaching one card synchronizes only the programs needed by the active set. Detaching a card revokes that card's Wallet pass without revoking other active passes.
 
 ## Trust boundaries
 
-- `platform_owner`: platform-wide administration and central Apple Wallet credential.
-- `brand_admin`: full control inside authorized brands; no central credential access.
-- `manager`: operational/configuration access granted by effective permissions.
-- `employee`: branch-scoped customer search, registration, scan, loyalty issue and reward redemption as allowed.
+- `platform_owner`: central Apple credential and platform-sensitive settings;
+- brand managers: card/program/customer/operation controls only within authorized brands;
+- employees: permission and branch-scoped scan operations.
 
-Every brand-scoped API performs server-side brand access, feature and action-permission checks. Navigation visibility is a usability layer, never the authorization boundary.
+The simplified navigation is not the security boundary. Every API still enforces tenant, feature, role and operation permissions server-side.
 
-## Browser authentication
+## Browser security
 
-```text
-Login
-  -> short access JWT in Secure HttpOnly cookie
-  -> opaque rotating refresh token in Secure HttpOnly cookie
-  -> AuthSession row (hashed refresh token, expiry, revocation)
-  -> CSRF cookie/header for unsafe cross-subdomain requests
-```
+- short access JWT in Secure HttpOnly cookie;
+- rotating opaque refresh token tied to an `AuthSession` row;
+- CSRF cookie/header validation for unsafe browser requests;
+- logout/session revocation;
+- CSP and standard browser security headers.
 
-Logging out revokes the AuthSession, so an access JWT captured before logout is rejected even before its short expiry.
+## Upgrade safety
 
-## Reliable frontend data flow
-
-```text
-Dashboard metrics.branch_count  (number)
-Branch options[]                 (array, independent state)
-
-Tab/brand change
-  -> clear stale tab payload
-  -> load required data
-  -> normalize lists with safeArray
-  -> settle optional requests independently
-  -> render inside SectionErrorBoundary
-```
-
-This prevents the historical `number.map()` / `number.filter()` client crash and keeps one denied optional endpoint from taking down the app.
-
-## Employee operational flow
-
-```text
-Employee brand access + assigned branch
-  -> /branch-options returns permitted branch only
-  -> customer search requires a query unless customers.list is granted
-  -> privacy-limited customer summary
-  -> selected scan/add/redeem operation
-  -> operational_branch enforces branch server-side
-  -> transaction + audit + Wallet update
-```
-
-## Main tables
-
-- Identity/tenancy: `users`, `auth_sessions`, `brands`, `user_brand_access`, `branches`, `employees`
-- General loyalty: `customers`, `loyalty_programs`, `loyalty_transactions`, `membership_tiers`, `rewards`, `coupons`, `coupon_redemptions`
-- Stamp experience: `stamp_programs`, `customer_stamp_cards`, `stamp_transactions`
-- Wallet: `brand_wallet_designs`, `platform_wallet_credentials`, `wallet_passes`, `wallet_devices`, `wallet_registrations`
-- Messaging: `notification_templates`, `notification_campaigns`, `notification_recipients`, `notifications`
-- Accountability: `audit_logs`
-
-## Sensitive data
-
-- `.env`, certificates and generated secrets are excluded from release archives.
-- Wallet files live under the protected Docker data volume.
-- Certificate passwords are encrypted and never returned by the API.
-- Brand managers never receive or download the central Apple certificate.
-- Browser bearer credentials are unavailable to JavaScript because they are HttpOnly.
-
-## V5 card-template layer
-
-The V5 card experience is normalized into four records:
-
-- `card_templates`: draft/published card identity, design and lifecycle per brand;
-- `card_template_programs`: ordered visible stamp programs inside a template;
-- `customer_card_assignments`: one active main template per customer;
-- `stamp_transactions`: immutable operations with reversal links and before/after state.
-
-Public registration reads only published snapshots. Managers edit draft columns and explicitly publish. Wallet generation and customer public pages consume the published snapshot, which prevents partial design/program changes from leaking before publication.
-
-A reversal never deletes or edits history. The original transaction is marked with a reversal link and a compensating transaction restores the exact previous card state. Tenant, branch, permission and template-program scope are all enforced by the API.
+Migration `0005_single_brand_studio` adds display options and active assignments, removes the old one-card uniqueness and creates compound uniqueness for customer-card assignments and Wallet passes. Historical records and named Docker volumes are retained.

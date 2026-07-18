@@ -18,7 +18,7 @@ from app.models import (
 from app.schemas.common import WalletDesignUpdate, WalletPushToken
 from app.services.audit import add_audit
 from app.services.capabilities import brand_capabilities
-from app.services.cards import active_template_for_customer, customer_template_cards, program_summary, published_design, template_out
+from app.services.cards import active_template_for_customer, attach_template, customer_template_cards, published_design, template_out
 from app.services.wallet import active_credential, generate_pkpass_bytes, public_wallet_status, validate_and_extract_certificate
 
 router = APIRouter()
@@ -44,16 +44,6 @@ def credential_out(x: PlatformWalletCredential | None) -> dict:
         "expires_at": x.expires_at, "status": x.status, "is_active": x.is_active,
         "created_at": x.created_at,
     }
-
-
-def wallet_program_out(program: StampProgram) -> dict:
-    data = program_summary(program)
-    data.update({
-        "card_asset_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/card" if program.card_image_url else None,
-        "empty_stamp_asset_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/empty_stamp" if program.empty_stamp_image_url else None,
-        "filled_stamp_asset_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/filled_stamp" if program.filled_stamp_image_url else None,
-    })
-    return data
 
 
 def design_out(x: BrandWalletDesign) -> dict:
@@ -91,14 +81,17 @@ async def pass_entities(db: AsyncSession, wallet_pass: WalletPass):
     if not template or template.brand_id != brand.id or template.status == "archived":
         _, template = await active_template_for_customer(db, customer)
         wallet_pass.card_template_id = template.id
-    template, stamp_rows = await customer_template_cards(db, customer)
+    template, stamp_rows = await customer_template_cards(db, customer, template)
     customer._wallet_stamp_cards = [
-        wallet_program_out(program)
-        | {
-            "stamps": card.stamps,
-            "rewards_available": card.rewards_available,
-        }
-        for card, program in stamp_rows
+        {
+            "id": str(program.id), "name": program.name, "stamps": card.stamps,
+            "required_stamps": program.required_stamps, "rewards_available": card.rewards_available,
+            "reward_title": program.reward_title, "stamp_icon": program.stamp_icon,
+            "empty_stamp_image_url": program.empty_stamp_image_url,
+            "filled_stamp_image_url": program.filled_stamp_image_url,
+            "display_options": dict(program.display_options or {}),
+            "accent_color": program.accent_color, "background_color": program.background_color,
+        } for card, program in stamp_rows
     ]
     credential = await active_credential(db)
     if not credential:
@@ -315,7 +308,10 @@ async def issue_pass(customer_id: uuid.UUID, request: Request, db: AsyncSession 
     _, template = await active_template_for_customer(db, customer)
     if template.status != "published":
         raise HTTPException(409, "يجب نشر البطاقة المختارة قبل الإصدار")
-    wallet_pass = await db.scalar(select(WalletPass).where(WalletPass.customer_id == customer.id, WalletPass.brand_id == customer.brand_id))
+    wallet_pass = await db.scalar(select(WalletPass).where(
+        WalletPass.customer_id == customer.id, WalletPass.brand_id == customer.brand_id,
+        WalletPass.card_template_id == template.id,
+    ))
     if not wallet_pass:
         wallet_pass = WalletPass(
             brand_id=customer.brand_id, customer_id=customer.id, card_template_id=template.id,
@@ -339,6 +335,48 @@ async def issue_pass(customer_id: uuid.UUID, request: Request, db: AsyncSession 
     await db.refresh(wallet_pass)
     return {
         "id": str(wallet_pass.id), "serial_number": wallet_pass.serial_number,
+        "card_url": f"{settings.public_web_url.rstrip('/')}/card/{wallet_pass.public_token}",
+        "download_url": f"{settings.public_api_url.rstrip('/')}/api/wallet/public/{wallet_pass.public_token}.pkpass",
+    }
+
+
+
+@router.post("/passes/{customer_id}/{template_id}", status_code=201)
+async def issue_template_pass(customer_id: uuid.UUID, template_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    customer = await db.get(Customer, customer_id)
+    template = await db.get(CardTemplate, template_id)
+    if not customer or not template or template.brand_id != customer.brand_id:
+        raise HTTPException(404, "العميل أو البطاقة غير موجودة")
+    await brand_access(db, user, customer.brand_id, permission="wallet.issue")
+    await require_wallet_feature(db, customer.brand_id)
+    if template.status != "published":
+        raise HTTPException(409, "انشر البطاقة أولًا قبل إصدارها")
+    credential = await active_credential(db)
+    if not credential:
+        raise HTTPException(409, "شهادة Apple Wallet المركزية غير مهيأة")
+    await attach_template(db, customer, template, actor_id=user.id)
+    wallet_pass = await db.scalar(select(WalletPass).where(
+        WalletPass.customer_id == customer.id,
+        WalletPass.card_template_id == template.id,
+    ))
+    if not wallet_pass:
+        wallet_pass = WalletPass(
+            brand_id=customer.brand_id, customer_id=customer.id, card_template_id=template.id,
+            serial_number=secrets.token_urlsafe(18), public_token=secrets.token_urlsafe(28),
+            authentication_token=secrets.token_urlsafe(32), pass_type_identifier=credential.pass_type_identifier,
+            update_tag=1, status="active",
+        )
+        db.add(wallet_pass)
+        await db.flush()
+    else:
+        wallet_pass.status = "active"
+        wallet_pass.pass_type_identifier = credential.pass_type_identifier
+        wallet_pass.update_tag += 1
+    add_audit(db, actor_id=user.id, action="wallet_template_pass_issued", entity_type="wallet_pass", entity_id=wallet_pass.id, brand_id=customer.brand_id, details={"customer_id": str(customer.id), "template_id": str(template.id)}, ip_address=request.client.host if request.client else None)
+    await db.commit()
+    return {
+        "id": str(wallet_pass.id), "serial_number": wallet_pass.serial_number,
+        "card_template_id": str(template.id), "card_template_name": template.name,
         "card_url": f"{settings.public_web_url.rstrip('/')}/card/{wallet_pass.public_token}",
         "download_url": f"{settings.public_api_url.rstrip('/')}/api/wallet/public/{wallet_pass.public_token}.pkpass",
     }
@@ -376,9 +414,11 @@ async def public_card(token: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "البطاقة غير موجودة")
     customer = await db.get(Customer, wallet_pass.customer_id)
     brand = await db.get(Brand, wallet_pass.brand_id)
-    template, stamp_rows = await customer_template_cards(db, customer)
-    if wallet_pass.card_template_id != template.id:
+    template = await db.get(CardTemplate, wallet_pass.card_template_id) if wallet_pass.card_template_id else None
+    if not template or template.brand_id != brand.id or template.status == "archived":
+        _, template = await active_template_for_customer(db, customer)
         wallet_pass.card_template_id = template.id
+    template, stamp_rows = await customer_template_cards(db, customer, template)
     credential = await active_credential(db)
     fallback_design = await ensure_design(db, brand)
     wallet = public_wallet_status(brand=brand, design=fallback_design, credential=credential, card_template=template)
@@ -394,14 +434,7 @@ async def public_card(token: str, db: AsyncSession = Depends(get_db)):
     return {
         "brand": {"name": brand.name, "slug": brand.slug, "logo_url": brand.logo_url, "primary_color": brand.primary_color, "accent_color": brand.accent_color, "program_mode": brand.program_mode},
         "customer": {"name": customer.name, "points": customer.points, "stamps": customer.stamps, "rewards": customer.available_rewards, "tier": customer.tier, "membership_code": customer.membership_code},
-        "stamp_cards": [
-            wallet_program_out(program)
-            | {
-                "stamps": card.stamps,
-                "rewards_available": card.rewards_available,
-            }
-            for card, program in stamp_rows
-        ],
+        "stamp_cards": [{"id": str(program.id), "name": program.name, "stamps": card.stamps, "required_stamps": program.required_stamps, "rewards_available": card.rewards_available, "background_color": program.background_color, "accent_color": program.accent_color, "stamp_icon": program.stamp_icon} for card, program in stamp_rows],
         "card_template": await template_out(db, template, include_usage=False, published_view=True),
         "design": await template_out(db, template, include_usage=False, published_view=True),
         "wallet": wallet,

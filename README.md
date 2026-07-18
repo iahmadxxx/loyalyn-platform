@@ -1,83 +1,89 @@
-# Loyalyn 5.1.0
+# Loyalyn 6.0.0 — Single-Brand Stamp Studio
 
-Loyalyn is a multi-brand loyalty operating system built with FastAPI, PostgreSQL, Next.js and Docker Compose. Version 5 adds a complete card-template layer: one customer Wallet card can contain several independent stamp programs, while each brand can publish multiple card combinations such as Coffee only, Coffee + Sweet, Breakfast or VIP.
+Loyalyn V6 is a focused Apple Wallet stamp-card system for one brand. The administration experience is intentionally small and direct: design cards, register customers, assign one or several cards, scan, and review operations.
 
-## Card templates
+The old platform data model remains upgrade-safe, but the main interface no longer exposes the multi-brand/SaaS, points, cashback and tier complexity.
 
-Each brand can create any number of card templates. A template controls:
+## One live studio
 
-- Arabic and English names, description, status and public-registration visibility;
-- the ordered stamp programs included in that card;
-- colors, logo, hero/strip/background artwork, barcode format and text fields;
-- draft and published versions so unfinished changes never leak to customers;
-- duplicate, publish, unpublish, archive, restore and safe-delete actions.
+The `استوديو البطاقات` page combines the full card workflow:
 
-Existing brands receive a compatible default published template automatically. Existing customers and stamp balances are preserved.
+- create any number of cards;
+- design and preview the selected card in the same screen;
+- add Coffee, Sweet, Breakfast or any custom stamp program inside a card;
+- edit colors, names, rewards, order and stamp count;
+- upload the card logo/background and filled/empty stamp artwork;
+- adjust stamp size, gap and X/Y position in exact pixels;
+- save, publish, duplicate independently or archive;
+- keep several published cards active at the same time.
 
-## Multiple stamp programs in one card
+Examples supported by the same brand:
 
-A single customer card can display independent progress for Coffee, Sweet, Breakfast or any custom label. Each program has its own target, reward, icon, colors, branch rules and transaction history. The first programs appear on the Wallet face and all programs remain available in the customer card details.
+- Coffee card;
+- Sweet card;
+- Coffee + Sweet card;
+- any other custom combination.
 
-## Customer assignment and public join
+## Deterministic stamp artwork
 
-- Every customer has one active main card assignment per brand.
-- The manager can change the customer's card template without creating a duplicate customer.
-- The public brand QR shows only published templates that allow public registration.
-- The customer selects a card, registers, receives a stable membership QR and—when Apple signing is ready—an Add to Apple Wallet action.
+Apple Wallet controls the physical pass layout, so Loyalyn generates the stamp area as one dynamic strip image. Every uploaded stamp/logo is fitted inside a fixed slot. The renderer applies size, spacing, containment and X/Y offsets inside that slot, preventing artwork from jumping above or below the stamp row.
 
-## Fast Scan and safe reversal
+The same pass can show up to two stamp-program rows on the strip, with additional program details available in the Wallet fields/back information.
 
-The employee scans the membership QR, sees only the programs included in that customer's selected card and adds the relevant Coffee/Sweet/etc. stamp. Every operation records before/after values, employee, branch and time.
+## Customer card assignment
 
-A mistaken operation is reversed safely:
+A customer can start with no card. From one customer dialog the manager can:
 
-- the original audit row is retained;
-- a compensating reversal row is created;
-- only the latest unreversed operation for that program can be reversed;
-- the exact previous balance is restored;
-- unauthorized or cross-template stamping is rejected by the API.
+- activate one card or several cards together;
+- remove one card without affecting the rest;
+- issue a separate Apple Wallet pass for every selected card;
+- open the card page;
+- copy the card link and send it to the customer.
 
-## Full administration lifecycle
+Each `(customer, card)` pair has its own stable Wallet record and `.pkpass` link.
 
-Card templates and stamp programs support create, edit, reorder, publish, disable, archive, restore and safe deletion. Records already used by customers are archived rather than destructively removed.
+## Registration and operations
 
-The existing Points only, Stamps only, Stamps + Points, Full Loyalty and Custom brand profiles remain available. Feature switches hide and reject disabled capabilities without deleting historical records.
+The public brand QR now registers the member first. The manager then chooses the appropriate cards. Fast Scan shows every active customer card and its own stamp programs in one screen.
 
-## Mobile administration
+Mistakes remain reversible through an immutable audit flow: the original transaction stays recorded and a compensating reversal restores the exact previous balance.
 
-The Arabic RTL interface includes a mobile header, slide-out navigation, bottom quick navigation, single-column forms, touch-friendly controls, responsive card previews and a simplified Fast Scan flow. TypeScript and the production Next.js build are part of the release checks.
+## Main navigation
 
-## Apple Wallet ownership
+```text
+استوديو البطاقات
+العملاء والبطاقات
+السكان السريع
+سجل العمليات
+الإعدادات
+```
 
-Only the platform owner manages the central Apple certificate. Brand managers create and publish card designs but cannot read or download the certificate or password. A production Pass Type certificate, matching WWDR certificate and a physical iPhone are required for final live installation/APNs acceptance.
+## Apple Wallet
+
+Only the platform-owner account can upload the central Apple certificate. A production Pass Type certificate, matching WWDR certificate and a physical iPhone are still required for final live acceptance.
 
 ## Verification
 
 ```bash
-PYTHONPATH=backend pytest -q backend/tests
-PYTHONPATH=backend python scripts/qa_smoke.py
+cd backend
+PYTHONPATH=. pytest -q
+
+cd ..
+PYTHONPATH=backend python scripts/qa_single_brand_studio.py
+PYTHONPATH=backend python scripts/qa_card_templates.py
 PYTHONPATH=backend python scripts/qa_stamp_experience.py
 PYTHONPATH=backend python scripts/qa_public_wallet_join.py
 PYTHONPATH=backend python scripts/qa_security_sessions.py
+PYTHONPATH=backend python scripts/qa_smoke.py
 PYTHONPATH=backend python scripts/qa_legacy_migration.py
-PYTHONPATH=backend python scripts/qa_card_templates.py
 
 cd frontend
 npm ci
 npm run lint
-NEXT_PUBLIC_API_URL=https://api.loyalyn.site npm run build
+npm run build
 ```
 
 ## Deployment
-
-New installation:
-
-```bash
-cp .env.example .env
-chmod 600 .env
-# Replace every CHANGE_ME value.
-./deploy.sh
-```
 
 Existing installation:
 
@@ -85,4 +91,6 @@ Existing installation:
 sudo ./deploy/upgrade.sh
 ```
 
-The upgrade script creates PostgreSQL and source backups, widens Alembic revision storage when required, applies migrations and rebuilds the services without deleting named volumes. Never run `docker compose down -v` in production.
+The script takes source and PostgreSQL backups, widens Alembic revision storage when needed, rebuilds the services and applies migration `0005_single_brand_studio` without deleting named volumes.
+
+Never run `docker compose down -v` in production.

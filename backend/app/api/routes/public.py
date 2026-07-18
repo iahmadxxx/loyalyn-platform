@@ -126,6 +126,34 @@ async def join_brand(slug: str, payload: PublicJoin, db: AsyncSession = Depends(
         if payload.birthday:
             customer.birthday = payload.birthday
         customer.is_active = True
+
+    # V6 single-brand studio uses registration first, then the manager chooses
+    # one or several cards for the customer. Older clients that explicitly
+    # send a card (or the legacy selected_program_ids field) keep the original
+    # self-service issue flow.
+    self_service_issue = bool(payload.selected_card_template_id) or "selected_program_ids" in payload.model_fields_set
+    if not self_service_issue:
+        cards = await ensure_customer_cards(db, customer)
+        await db.commit()
+        wallet = {
+            "ready": False,
+            "status": "assignment_pending",
+            "message": "تم تسجيل عضويتك. سيحدد البراند البطاقة أو البطاقات المناسبة لك ثم يرسل روابط إضافتها إلى Apple Wallet.",
+            "card_url": None,
+            "download_url": None,
+        }
+        return {
+            "created": created,
+            "customer": {"id": str(customer.id), "name": customer.name, "membership_code": customer.membership_code},
+            "cards": [card_out(card, program) for card, program in cards if card.is_active],
+            "card_template": None,
+            "scan_code": customer.membership_code,
+            "wallet": wallet,
+            "wallet_ready": False,
+            "card_url": None,
+            "download_url": None,
+        }
+
     template = None
     if payload.selected_card_template_id:
         template = await db.get(CardTemplate, payload.selected_card_template_id)
@@ -150,7 +178,10 @@ async def join_brand(slug: str, payload: PublicJoin, db: AsyncSession = Depends(
     design = await db.scalar(select(BrandWalletDesign).where(BrandWalletDesign.brand_id == brand.id))
     credential = await active_credential(db)
     wallet = public_wallet_status(brand=brand, design=design, credential=credential, card_template=template)
-    wallet_pass = await db.scalar(select(WalletPass).where(WalletPass.brand_id == brand.id, WalletPass.customer_id == customer.id))
+    wallet_pass = await db.scalar(select(WalletPass).where(
+        WalletPass.brand_id == brand.id, WalletPass.customer_id == customer.id,
+        WalletPass.card_template_id == template.id,
+    ))
     if brand_capabilities(brand).get("wallet"):
         if not wallet_pass:
             wallet_pass = WalletPass(

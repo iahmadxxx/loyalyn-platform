@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import uuid
-import shutil
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -16,50 +15,14 @@ from app.db.session import get_db
 from app.models import (
     Brand, Branch, CardTemplate, CardTemplateProgram, Customer, CustomerStampCard, StampProgram, StampTransaction, WalletPass,
 )
-from app.schemas.common import StampAction, StampProgramCreate, StampProgramReorder, StampProgramUpdate, StampRedeem, StampTransactionReverse
+from app.schemas.common import StampAction, StampProgramCreate, StampProgramUpdate, StampRedeem, StampTransactionReverse
 from app.services.audit import add_audit
 from app.services.capabilities import brand_capabilities
-from app.services.cards import customer_template_cards
+from app.services.cards import assigned_templates_for_customer, customer_template_cards, sync_customer_cards_to_assignments
 from app.services.wallet import push_pass_update
 
 router = APIRouter()
 settings = get_settings()
-
-STAMP_ICON_LIBRARY = [
-    {"category": "coffee", "label": "قهوة ومشروبات", "items": [
-        {"value": "coffee", "label": "كوب قهوة", "symbol": "☕"},
-        {"value": "espresso", "label": "إسبريسو", "symbol": "☕"},
-        {"value": "bean", "label": "حبة بن", "symbol": "◉"},
-        {"value": "cup", "label": "كوب سفري", "symbol": "🥤"},
-        {"value": "cold_drink", "label": "مشروب بارد", "symbol": "🧋"},
-        {"value": "tea", "label": "شاي", "symbol": "🍵"},
-        {"value": "juice", "label": "عصير", "symbol": "🧃"},
-    ]},
-    {"category": "dessert", "label": "حلى ومخبوزات", "items": [
-        {"value": "cake", "label": "قطعة كيك", "symbol": "🍰"},
-        {"value": "cookie", "label": "كوكيز", "symbol": "🍪"},
-        {"value": "donut", "label": "دونات", "symbol": "🍩"},
-        {"value": "croissant", "label": "كرواسون", "symbol": "🥐"},
-        {"value": "cupcake", "label": "كب كيك", "symbol": "🧁"},
-        {"value": "icecream", "label": "آيس كريم", "symbol": "🍨"},
-        {"value": "chocolate", "label": "شوكولاتة", "symbol": "🍫"},
-    ]},
-    {"category": "food", "label": "طعام", "items": [
-        {"value": "breakfast", "label": "فطور", "symbol": "🍳"},
-        {"value": "burger", "label": "برغر", "symbol": "🍔"},
-        {"value": "pizza", "label": "بيتزا", "symbol": "🍕"},
-        {"value": "sandwich", "label": "ساندويتش", "symbol": "🥪"},
-        {"value": "salad", "label": "سلطة", "symbol": "🥗"},
-    ]},
-    {"category": "general", "label": "رموز عامة", "items": [
-        {"value": "star", "label": "نجمة", "symbol": "★"},
-        {"value": "heart", "label": "قلب", "symbol": "♥"},
-        {"value": "gift", "label": "هدية", "symbol": "🎁"},
-        {"value": "crown", "label": "تاج", "symbol": "♛"},
-        {"value": "sparkle", "label": "لمعة", "symbol": "✦"},
-        {"value": "custom", "label": "صورة مخصصة", "symbol": "●"},
-    ]},
-]
 
 
 def program_out(program: StampProgram) -> dict:
@@ -69,10 +32,10 @@ def program_out(program: StampProgram) -> dict:
         "required_stamps": program.required_stamps, "reward_title": program.reward_title,
         "reward_type": program.reward_type, "stamp_icon": program.stamp_icon,
         "background_color": program.background_color, "accent_color": program.accent_color,
-        "card_image_url": program.card_image_url,
-        "empty_stamp_image_url": program.empty_stamp_image_url,
-        "filled_stamp_image_url": program.filled_stamp_image_url,
-        "settings": dict(program.settings or {}),
+        "card_image_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/card" if program.card_image_url else None,
+        "empty_stamp_image_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/empty_stamp" if program.empty_stamp_image_url else None,
+        "filled_stamp_image_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/filled_stamp" if program.filled_stamp_image_url else None,
+        "display_options": dict(program.display_options or {}),
         "is_default": program.is_default, "sort_order": program.sort_order,
         "is_active": program.is_active, "is_archived": program.is_archived, "archived_at": program.archived_at,
         "created_at": program.created_at, "updated_at": program.updated_at,
@@ -108,8 +71,7 @@ async def ensure_branch(db: AsyncSession, branch_id: uuid.UUID | None, brand_id:
 
 
 async def ensure_customer_cards(db: AsyncSession, customer: Customer) -> list[tuple[CustomerStampCard, StampProgram]]:
-    _, rows = await customer_template_cards(db, customer)
-    return rows
+    return await sync_customer_cards_to_assignments(db, customer)
 
 
 async def sync_customer_totals(db: AsyncSession, customer: Customer) -> None:
@@ -123,16 +85,13 @@ async def sync_customer_totals(db: AsyncSession, customer: Customer) -> None:
     customer.available_rewards = int(totals[1] or 0)
 
 
-async def mark_wallet_update(db: AsyncSession, customer_id: uuid.UUID) -> WalletPass | None:
-    wallet_pass = await db.scalar(select(WalletPass).where(WalletPass.customer_id == customer_id, WalletPass.status == "active"))
-    if wallet_pass:
+async def mark_wallet_updates(db: AsyncSession, customer_id: uuid.UUID) -> list[WalletPass]:
+    passes = list((await db.scalars(select(WalletPass).where(
+        WalletPass.customer_id == customer_id, WalletPass.status == "active"
+    ))).all())
+    for wallet_pass in passes:
         wallet_pass.update_tag += 1
-    return wallet_pass
-
-
-@router.get("/icon-library")
-async def icon_library(user=Depends(current_user)):
-    return STAMP_ICON_LIBRARY
+    return passes
 
 
 @router.get("/programs")
@@ -158,30 +117,8 @@ async def create_program(payload: StampProgramCreate, request: Request, db: Asyn
     program = StampProgram(**payload.model_dump())
     db.add(program)
     await db.flush()
-    # Backward-compatible behavior: the default card represents the brand's
-    # main card, so newly created stamp programs are added to it automatically.
-    # Other card templates remain explicit and are not changed.
-    default_template = await db.scalar(select(CardTemplate).where(
-        CardTemplate.brand_id == payload.brand_id,
-        CardTemplate.is_default.is_(True),
-        CardTemplate.status != "archived",
-    ).order_by(CardTemplate.created_at))
-    if default_template:
-        linked = await db.scalar(select(CardTemplateProgram).where(
-            CardTemplateProgram.card_template_id == default_template.id,
-            CardTemplateProgram.stamp_program_id == program.id,
-        ))
-        if not linked:
-            max_order = await db.scalar(select(func.max(CardTemplateProgram.sort_order)).where(
-                CardTemplateProgram.card_template_id == default_template.id
-            ))
-            db.add(CardTemplateProgram(
-                card_template_id=default_template.id,
-                stamp_program_id=program.id,
-                sort_order=int(max_order or -1) + 1,
-                is_visible=True,
-            ))
-            default_template.draft_version += 1
+    # V6 keeps stamp programs card-specific. The studio links the new
+    # program to the currently edited card in the same save flow.
     add_audit(db, actor_id=user.id, action="stamp_program_created", entity_type="stamp_program", entity_id=program.id, brand_id=payload.brand_id, details={"name": program.name, "slug": program.slug}, ip_address=request.client.host if request.client else None)
     await db.commit()
     await db.refresh(program)
@@ -209,60 +146,6 @@ async def update_program(program_id: uuid.UUID, payload: StampProgramUpdate, req
     await db.commit()
     await db.refresh(program)
     return program_out(program)
-
-
-@router.post("/programs/{program_id}/duplicate", status_code=201)
-async def duplicate_program(program_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
-    source = await db.get(StampProgram, program_id)
-    if not source:
-        raise HTTPException(404, "برنامج الختم غير موجود")
-    await brand_access(db, user, source.brand_id, permission="loyalty.manage")
-    root = f"{source.slug}-copy"[:70]
-    slug = root
-    counter = 2
-    while await db.scalar(select(StampProgram).where(StampProgram.brand_id == source.brand_id, StampProgram.slug == slug)):
-        slug = f"{root[:65]}-{counter}"
-        counter += 1
-    clone = StampProgram(
-        brand_id=source.brand_id, name=f"نسخة من {source.name}", slug=slug,
-        description=source.description, required_stamps=source.required_stamps,
-        reward_title=source.reward_title, reward_type=source.reward_type, stamp_icon=source.stamp_icon,
-        background_color=source.background_color, accent_color=source.accent_color,
-        card_image_url=None, empty_stamp_image_url=None, filled_stamp_image_url=None, settings=dict(source.settings or {}),
-        is_default=False, sort_order=source.sort_order + 1, is_active=True, is_archived=False,
-    )
-    db.add(clone)
-    await db.flush()
-    clone_folder = settings.wallet_path / "stamp-programs" / str(clone.id)
-    for field in ("card_image_url", "empty_stamp_image_url", "filled_stamp_image_url"):
-        value = getattr(source, field)
-        if not value or not value.startswith("storage://"):
-            continue
-        source_path = Path(value.removeprefix("storage://"))
-        if not source_path.exists():
-            continue
-        clone_folder.mkdir(parents=True, exist_ok=True)
-        target = clone_folder / source_path.name
-        shutil.copy2(source_path, target)
-        setattr(clone, field, f"storage://{target}")
-    add_audit(db, actor_id=user.id, action="stamp_program_duplicated", entity_type="stamp_program", entity_id=clone.id, brand_id=clone.brand_id, details={"source_id": str(source.id)}, ip_address=request.client.host if request.client else None)
-    await db.commit()
-    await db.refresh(clone)
-    return program_out(clone)
-
-
-@router.post("/programs/reorder")
-async def reorder_programs(payload: StampProgramReorder, brand_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
-    await brand_access(db, user, brand_id, permission="loyalty.manage")
-    rows = list((await db.scalars(select(StampProgram).where(StampProgram.brand_id == brand_id, StampProgram.id.in_(payload.program_ids)))).all())
-    by_id = {row.id: row for row in rows}
-    if len(by_id) != len(set(payload.program_ids)):
-        raise HTTPException(422, "توجد برامج غير صحيحة أو مكررة")
-    for index, program_id in enumerate(payload.program_ids):
-        by_id[program_id].sort_order = index
-    add_audit(db, actor_id=user.id, action="stamp_programs_reordered", entity_type="stamp_program", entity_id=None, brand_id=brand_id, details={"program_ids": [str(x) for x in payload.program_ids]}, ip_address=request.client.host if request.client else None)
-    await db.commit()
-    return [program_out(by_id[program_id]) for program_id in payload.program_ids]
 
 
 @router.post("/programs/{program_id}/archive")
@@ -344,14 +227,13 @@ async def upload_program_asset(program_id: uuid.UUID, kind: str = Form(...), fil
     return {"ok": True, "kind": kind, "asset_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/{kind}"}
 
 
+
 @router.delete("/programs/{program_id}/asset/{kind}", status_code=204)
 async def delete_program_asset(program_id: uuid.UUID, kind: str, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     program = await db.get(StampProgram, program_id)
-    if not program:
-        raise HTTPException(404, "برنامج الختم غير موجود")
+    if not program or kind not in {"card", "empty_stamp", "filled_stamp"}:
+        raise HTTPException(404, "الصورة غير موجودة")
     await brand_access(db, user, program.brand_id, permission="loyalty.manage")
-    if kind not in {"card", "empty_stamp", "filled_stamp"}:
-        raise HTTPException(400, "نوع الصورة غير صحيح")
     field = {"card": "card_image_url", "empty_stamp": "empty_stamp_image_url", "filled_stamp": "filled_stamp_image_url"}[kind]
     value = getattr(program, field)
     if value and value.startswith("storage://"):
@@ -397,36 +279,26 @@ async def scan_customer(membership_code: str, brand_id: uuid.UUID | None = None,
         raise HTTPException(404, "لم يتم العثور على العميل من الرمز الممسوح")
     await brand_access(db, user, customer.brand_id, permission="loyalty.apply")
     brand = await require_stamps(db, customer.brand_id)
-    template, cards = await customer_template_cards(db, customer)
+    assigned = await assigned_templates_for_customer(
+        db, customer, ensure_fallback=False
+    )
+    template = assigned[0][1] if assigned else None
+    cards = await ensure_customer_cards(db, customer)
+    groups = []
+    for _, assigned_template in assigned:
+        _, template_cards = await customer_template_cards(db, customer, assigned_template)
+        groups.append({
+            "id": str(assigned_template.id), "name": assigned_template.name, "slug": assigned_template.slug,
+            "cards": [card_out(card, program) for card, program in template_cards],
+        })
     await db.commit()
     return {
         "brand": {"id": str(brand.id), "name": brand.name, "slug": brand.slug},
         "customer": {"id": str(customer.id), "name": customer.name, "phone": customer.phone, "membership_code": customer.membership_code, "last_visit_at": customer.last_visit_at},
-        "card_template": {"id": str(template.id), "name": template.name, "slug": template.slug},
+        "card_template": ({"id": str(template.id), "name": template.name, "slug": template.slug} if template else None),
+        "card_templates": groups,
         "cards": [card_out(card, program) for card, program in cards],
     }
-
-
-def _program_settings(program: StampProgram) -> dict:
-    defaults = {
-        "display_mode": "icons_and_count", "stamp_shape": "circle", "empty_style": "outline",
-        "filled_style": "solid", "icon_size": "medium", "allow_multiple": True,
-        "max_per_action": 5, "daily_limit": None, "carry_over": True,
-        "show_reward_title": True, "show_on_wallet_front": True, "allowed_branch_ids": [],
-        "starts_at": None, "ends_at": None,
-    }
-    defaults.update(dict(program.settings or {}))
-    return defaults
-
-
-def _parse_program_datetime(value: object) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
 
 
 @router.post("/customers/{customer_id}/programs/{program_id}/add")
@@ -444,34 +316,6 @@ async def add_stamps(customer_id: uuid.UUID, program_id: uuid.UUID, payload: Sta
     branch_id = operational_branch(access, payload.branch_id)
     await require_stamps(db, customer.brand_id)
     await ensure_branch(db, branch_id, customer.brand_id)
-    config = _program_settings(program)
-    if not config.get("allow_multiple", True) and payload.quantity > 1:
-        raise HTTPException(422, "هذا البرنامج يسمح بختم واحد فقط في كل عملية")
-    max_per_action = max(1, int(config.get("max_per_action") or 1))
-    if payload.quantity > max_per_action:
-        raise HTTPException(422, f"الحد الأعلى في العملية الواحدة هو {max_per_action} أختام")
-    allowed_branch_ids = {str(value) for value in config.get("allowed_branch_ids") or []}
-    if allowed_branch_ids and (not branch_id or str(branch_id) not in allowed_branch_ids):
-        raise HTTPException(403, "برنامج الختم غير متاح في هذا الفرع")
-    now = datetime.now(timezone.utc)
-    starts_at = _parse_program_datetime(config.get("starts_at"))
-    ends_at = _parse_program_datetime(config.get("ends_at"))
-    if starts_at and now < starts_at:
-        raise HTTPException(409, "برنامج الختم لم يبدأ بعد")
-    if ends_at and now > ends_at:
-        raise HTTPException(409, "انتهت مدة برنامج الختم")
-    daily_limit = config.get("daily_limit")
-    if daily_limit:
-        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        earned_today = int(await db.scalar(select(func.coalesce(func.sum(StampTransaction.delta_stamps), 0)).where(
-            StampTransaction.customer_id == customer.id,
-            StampTransaction.stamp_program_id == program.id,
-            StampTransaction.action == "add",
-            StampTransaction.reversed_at.is_(None),
-            StampTransaction.created_at >= start_of_day,
-        )) or 0)
-        if earned_today + payload.quantity > int(daily_limit):
-            raise HTTPException(422, f"الحد اليومي لهذا العميل هو {int(daily_limit)} أختام")
     await ensure_customer_cards(db, customer)
     card = await db.scalar(select(CustomerStampCard).where(CustomerStampCard.customer_id == customer.id, CustomerStampCard.stamp_program_id == program.id).with_for_update())
     if not card or not card.is_active or program.is_archived:
@@ -480,7 +324,7 @@ async def add_stamps(customer_id: uuid.UUID, program_id: uuid.UUID, payload: Sta
     rewards_before = card.rewards_available
     raw_total = card.stamps + payload.quantity
     earned = raw_total // program.required_stamps
-    card.stamps = raw_total % program.required_stamps if config.get("carry_over", True) else (0 if earned else raw_total)
+    card.stamps = raw_total % program.required_stamps
     card.rewards_available += earned
     card.lifetime_stamps += payload.quantity
     card.last_stamp_at = datetime.now(timezone.utc)
@@ -495,11 +339,12 @@ async def add_stamps(customer_id: uuid.UUID, program_id: uuid.UUID, payload: Sta
         idempotency_key=payload.idempotency_key, reference=payload.reference, note=payload.note,
     )
     db.add(tx)
-    wallet_pass = await mark_wallet_update(db, customer.id)
+    wallet_passes = await mark_wallet_updates(db, customer.id)
     add_audit(db, actor_id=user.id, action="stamp_added", entity_type="customer_stamp_card", entity_id=card.id, brand_id=customer.brand_id, details={"customer_id": str(customer.id), "program_id": str(program.id), "quantity": payload.quantity, "earned_rewards": earned}, ip_address=request.client.host if request.client else None)
     await db.commit()
-    if wallet_pass:
+    for wallet_pass in wallet_passes:
         await push_pass_update(db, wallet_pass)
+    if wallet_passes:
         await db.commit()
     template, cards = await customer_template_cards(db, customer)
     return {"duplicate": False, "earned_rewards": earned, "customer": {"id": str(customer.id), "name": customer.name, "membership_code": customer.membership_code}, "card_template": {"id": str(template.id), "name": template.name}, "cards": [card_out(c, p) for c, p in cards]}
@@ -532,11 +377,12 @@ async def redeem_stamp_reward(customer_id: uuid.UUID, program_id: uuid.UUID, pay
         idempotency_key=payload.idempotency_key, note=payload.note,
     )
     db.add(tx)
-    wallet_pass = await mark_wallet_update(db, customer.id)
+    wallet_passes = await mark_wallet_updates(db, customer.id)
     add_audit(db, actor_id=user.id, action="stamp_reward_redeemed", entity_type="customer_stamp_card", entity_id=card.id, brand_id=customer.brand_id, details={"customer_id": str(customer.id), "program_id": str(program.id), "reward_title": program.reward_title}, ip_address=request.client.host if request.client else None)
     await db.commit()
-    if wallet_pass:
+    for wallet_pass in wallet_passes:
         await push_pass_update(db, wallet_pass)
+    if wallet_passes:
         await db.commit()
     template, cards = await customer_template_cards(db, customer)
     return {"duplicate": False, "reward_title": program.reward_title, "card_template": {"id": str(template.id), "name": template.name}, "cards": [card_out(c, p) for c, p in cards]}
@@ -643,11 +489,12 @@ async def reverse_stamp_transaction(transaction_id: uuid.UUID, payload: StampTra
     original.reversed_by_actor_id = user.id
     original.reversal_reason = payload.reason
     original.reversal_transaction_id = reversal.id
-    wallet_pass = await mark_wallet_update(db, customer.id)
+    wallet_passes = await mark_wallet_updates(db, customer.id)
     add_audit(db, actor_id=user.id, action="stamp_transaction_reversed", entity_type="stamp_transaction", entity_id=original.id, brand_id=original.brand_id, details={"reversal_id": str(reversal.id), "reason": payload.reason}, ip_address=request.client.host if request.client else None)
     await db.commit()
-    if wallet_pass:
+    for wallet_pass in wallet_passes:
         await push_pass_update(db, wallet_pass)
+    if wallet_passes:
         await db.commit()
     template, cards = await customer_template_cards(db, customer)
     return {"duplicate": False, "transaction": transaction_out(reversal), "card_template": {"id": str(template.id), "name": template.name}, "cards": [card_out(c, p) for c, p in cards]}

@@ -16,11 +16,12 @@ from app.models import (
     Brand, CardTemplate, CardTemplateProgram, Customer, CustomerCardAssignment,
     StampProgram, WalletPass,
 )
-from app.schemas.common import CardTemplateCreate, CardTemplateUpdate, CustomerCardAssignmentUpdate
+from app.schemas.common import CardTemplateCreate, CardTemplateUpdate, CustomerCardAssignmentUpdate, CustomerCardAssignmentsSet
 from app.services.audit import add_audit
 from app.services.capabilities import brand_capabilities
 from app.services.cards import (
-    assign_template, ensure_default_template, make_published_snapshot, set_template_programs, template_out,
+    assigned_templates_for_customer, assign_template, attach_template, detach_template, ensure_default_template,
+    make_published_snapshot, set_template_programs, template_out,
 )
 from app.services.wallet import push_pass_update
 
@@ -49,6 +50,16 @@ async def unique_slug(db: AsyncSession, brand_id: uuid.UUID, base: str, *, exclu
             return candidate
         candidate = f"{root[:65]}-{counter}"
         counter += 1
+
+
+async def unique_program_slug(db: AsyncSession, brand_id: uuid.UUID, base: str) -> str:
+    root = base.strip().lower()[:70] or "stamp"
+    candidate = root
+    counter = 2
+    while await db.scalar(select(StampProgram).where(StampProgram.brand_id == brand_id, StampProgram.slug == candidate)):
+        candidate = f"{root[:65]}-{counter}"
+        counter += 1
+    return candidate
 
 
 @router.get("/templates")
@@ -194,7 +205,9 @@ async def unpublish_template(template_id: uuid.UUID, request: Request, db: Async
     if not template:
         raise HTTPException(404, "البطاقة غير موجودة")
     await brand_access(db, user, template.brand_id, permission="wallet.design")
-    usage = int(await db.scalar(select(func.count()).select_from(CustomerCardAssignment).where(CustomerCardAssignment.card_template_id == template.id)) or 0)
+    usage = int(await db.scalar(select(func.count()).select_from(CustomerCardAssignment).where(
+        CustomerCardAssignment.card_template_id == template.id, CustomerCardAssignment.is_active.is_(True)
+    )) or 0)
     if usage:
         raise HTTPException(409, "لا يمكن إلغاء نشر بطاقة مستخدمة؛ أنشئ بديلًا وانقل العملاء أو أرشفها")
     template.status = "draft"
@@ -224,9 +237,25 @@ async def duplicate_template(template_id: uuid.UUID, request: Request, db: Async
     )
     db.add(clone)
     await db.flush()
-    rows = list((await db.scalars(select(CardTemplateProgram).where(CardTemplateProgram.card_template_id == source.id).order_by(CardTemplateProgram.sort_order))).all())
-    for row in rows:
-        db.add(CardTemplateProgram(card_template_id=clone.id, stamp_program_id=row.stamp_program_id, sort_order=row.sort_order, is_visible=row.is_visible))
+    rows = list((await db.execute(
+        select(CardTemplateProgram, StampProgram)
+        .join(StampProgram, StampProgram.id == CardTemplateProgram.stamp_program_id)
+        .where(CardTemplateProgram.card_template_id == source.id)
+        .order_by(CardTemplateProgram.sort_order)
+    )).all())
+    for index, (row, program) in enumerate(rows):
+        program_slug = await unique_program_slug(db, source.brand_id, f"{program.slug}-{clone.slug}")
+        program_clone = StampProgram(
+            brand_id=program.brand_id, name=program.name, slug=program_slug, description=program.description,
+            required_stamps=program.required_stamps, reward_title=program.reward_title, reward_type=program.reward_type,
+            stamp_icon=program.stamp_icon, background_color=program.background_color, accent_color=program.accent_color,
+            card_image_url=program.card_image_url, empty_stamp_image_url=program.empty_stamp_image_url,
+            filled_stamp_image_url=program.filled_stamp_image_url, display_options=dict(program.display_options or {}),
+            is_default=False, sort_order=index, is_active=True, is_archived=False,
+        )
+        db.add(program_clone)
+        await db.flush()
+        db.add(CardTemplateProgram(card_template_id=clone.id, stamp_program_id=program_clone.id, sort_order=row.sort_order, is_visible=row.is_visible))
     add_audit(db, actor_id=user.id, action="card_template_duplicated", entity_type="card_template", entity_id=clone.id, brand_id=clone.brand_id, details={"source_id": str(source.id)}, ip_address=request.client.host if request.client else None)
     await db.commit()
     await db.refresh(clone)
@@ -248,11 +277,14 @@ async def archive_template(template_id: uuid.UUID, request: Request, db: AsyncSe
     if usage and not replacements:
         raise HTTPException(409, "لا يمكن أرشفة البطاقة المستخدمة قبل نشر بطاقة بديلة")
     replacement = replacements[0] if replacements else None
-    if replacement:
-        assignments = list((await db.scalars(select(CustomerCardAssignment).where(CustomerCardAssignment.card_template_id == template.id))).all())
-        for assignment in assignments:
-            customer = await db.get(Customer, assignment.customer_id)
-            await assign_template(db, customer, replacement, actor_id=user.id)
+    assignments = list((await db.scalars(select(CustomerCardAssignment).where(
+        CustomerCardAssignment.card_template_id == template.id, CustomerCardAssignment.is_active.is_(True)
+    ))).all())
+    for assignment in assignments:
+        customer = await db.get(Customer, assignment.customer_id)
+        if replacement:
+            await attach_template(db, customer, replacement, actor_id=user.id)
+        await detach_template(db, customer, template)
     template.status = "archived"
     template.archived_at = datetime.now(timezone.utc)
     template.allow_public_join = False
@@ -330,14 +362,13 @@ async def upload_template_asset(
     return {"ok": True, "kind": kind, "asset_url": f"{settings.public_api_url.rstrip('/')}/api/cards/public/assets/{template.id}/{kind}"}
 
 
+
 @router.delete("/templates/{template_id}/asset/{kind}", status_code=204)
 async def delete_template_asset(template_id: uuid.UUID, kind: str, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
     template = await db.get(CardTemplate, template_id)
-    if not template:
-        raise HTTPException(404, "البطاقة غير موجودة")
+    if not template or kind not in {"logo", "hero", "background", "strip"}:
+        raise HTTPException(404, "الصورة غير موجودة")
     await brand_access(db, user, template.brand_id, permission="wallet.design")
-    if kind not in {"logo", "hero", "background", "strip"}:
-        raise HTTPException(400, "نوع الصورة غير صحيح")
     field = {"logo": "logo_url", "hero": "hero_url", "background": "background_image_url", "strip": "strip_url"}[kind]
     value = getattr(template, field)
     if value and value.startswith("storage://"):
@@ -371,7 +402,9 @@ async def get_customer_assignment(customer_id: uuid.UUID, db: AsyncSession = Dep
     if not customer:
         raise HTTPException(404, "العميل غير موجود")
     await brand_access(db, user, customer.brand_id, permission="customers.view")
-    assignment = await db.scalar(select(CustomerCardAssignment).where(CustomerCardAssignment.customer_id == customer.id))
+    assignment = await db.scalar(select(CustomerCardAssignment).where(
+        CustomerCardAssignment.customer_id == customer.id, CustomerCardAssignment.is_active.is_(True)
+    ).order_by(CustomerCardAssignment.created_at).limit(1))
     if not assignment:
         brand = await db.get(Brand, customer.brand_id)
         template = await ensure_default_template(db, brand)
@@ -400,10 +433,103 @@ async def update_customer_assignment(
         assignment = await assign_template(db, customer, template, actor_id=user.id)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    wallet_pass = await db.scalar(select(WalletPass).where(WalletPass.customer_id == customer.id, WalletPass.status == "active"))
+    wallet_pass = await db.scalar(select(WalletPass).where(
+        WalletPass.customer_id == customer.id, WalletPass.card_template_id == template.id, WalletPass.status == "active"
+    ))
     add_audit(db, actor_id=user.id, action="customer_card_template_changed", entity_type="customer", entity_id=customer.id, brand_id=customer.brand_id, details={"template_id": str(template.id)}, ip_address=request.client.host if request.client else None)
     await db.commit()
     if wallet_pass:
         await push_pass_update(db, wallet_pass)
         await db.commit()
     return {"assignment_id": str(assignment.id), "card_template": await template_out(db, template)}
+
+@router.get("/customers/{customer_id}/assignments")
+async def list_customer_assignments(customer_id: uuid.UUID, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    customer = await db.get(Customer, customer_id)
+    if not customer:
+        raise HTTPException(404, "العميل غير موجود")
+    await brand_access(db, user, customer.brand_id, permission="customers.view")
+    rows = await assigned_templates_for_customer(
+        db, customer, include_draft=True, ensure_fallback=False
+    )
+    result = []
+    for assignment, template in rows:
+        wallet_pass = await db.scalar(select(WalletPass).where(
+            WalletPass.customer_id == customer.id,
+            WalletPass.card_template_id == template.id,
+            WalletPass.status == "active",
+        ))
+        result.append({
+            "assignment_id": str(assignment.id),
+            "is_active": assignment.is_active,
+            "card_template": await template_out(db, template),
+            "wallet_pass": ({
+                "id": str(wallet_pass.id),
+                "card_url": f"{settings.public_web_url.rstrip('/')}/card/{wallet_pass.public_token}",
+                "download_url": f"{settings.public_api_url.rstrip('/')}/api/wallet/public/{wallet_pass.public_token}.pkpass",
+            } if wallet_pass else None),
+        })
+    await db.commit()
+    return result
+
+
+@router.post("/customers/{customer_id}/assignments/{template_id}", status_code=201)
+async def attach_customer_card(customer_id: uuid.UUID, template_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    customer = await db.get(Customer, customer_id)
+    template = await db.get(CardTemplate, template_id)
+    if not customer or not template or customer.brand_id != template.brand_id:
+        raise HTTPException(404, "العميل أو البطاقة غير موجودة")
+    if template.status != "published":
+        raise HTTPException(409, "انشر البطاقة أولًا قبل إضافتها للعميل")
+    await brand_access(db, user, customer.brand_id, permission="customers.edit")
+    try:
+        assignment = await attach_template(db, customer, template, actor_id=user.id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    add_audit(db, actor_id=user.id, action="customer_card_attached", entity_type="customer", entity_id=customer.id, brand_id=customer.brand_id, details={"template_id": str(template.id)}, ip_address=request.client.host if request.client else None)
+    await db.commit()
+    return {"assignment_id": str(assignment.id), "card_template": await template_out(db, template)}
+
+
+@router.delete("/customers/{customer_id}/assignments/{template_id}", status_code=204)
+async def detach_customer_card(customer_id: uuid.UUID, template_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    customer = await db.get(Customer, customer_id)
+    template = await db.get(CardTemplate, template_id)
+    if not customer or not template or customer.brand_id != template.brand_id:
+        raise HTTPException(404, "العميل أو البطاقة غير موجودة")
+    await brand_access(db, user, customer.brand_id, permission="customers.edit")
+    await detach_template(db, customer, template)
+    add_audit(db, actor_id=user.id, action="customer_card_detached", entity_type="customer", entity_id=customer.id, brand_id=customer.brand_id, details={"template_id": str(template.id)}, ip_address=request.client.host if request.client else None)
+    await db.commit()
+
+
+@router.put("/customers/{customer_id}/assignments")
+async def set_customer_cards(customer_id: uuid.UUID, payload: CustomerCardAssignmentsSet, request: Request, db: AsyncSession = Depends(get_db), user=Depends(current_user)):
+    customer = await db.get(Customer, customer_id)
+    if not customer:
+        raise HTTPException(404, "العميل غير موجود")
+    await brand_access(db, user, customer.brand_id, permission="customers.edit")
+    wanted = list(dict.fromkeys(payload.card_template_ids))
+    templates = list((await db.scalars(select(CardTemplate).where(
+        CardTemplate.id.in_(wanted) if wanted else CardTemplate.id.is_(None),
+        CardTemplate.brand_id == customer.brand_id,
+        CardTemplate.status == "published",
+    ))).all()) if wanted else []
+    if len(templates) != len(wanted):
+        raise HTTPException(422, "إحدى البطاقات غير منشورة أو لا تتبع هذا البراند")
+    current = list((await db.scalars(select(CustomerCardAssignment).where(CustomerCardAssignment.customer_id == customer.id))).all())
+    by_template = {row.card_template_id: row for row in current}
+    wanted_set = set(wanted)
+    for row in current:
+        row.is_active = row.card_template_id in wanted_set
+        if not row.is_active:
+            wallet_pass = await db.scalar(select(WalletPass).where(WalletPass.customer_id == customer.id, WalletPass.card_template_id == row.card_template_id, WalletPass.status == "active"))
+            if wallet_pass:
+                wallet_pass.status = "revoked"
+                wallet_pass.update_tag += 1
+    for template in templates:
+        await attach_template(db, customer, template, actor_id=user.id)
+    add_audit(db, actor_id=user.id, action="customer_cards_set", entity_type="customer", entity_id=customer.id, brand_id=customer.brand_id, details={"template_ids": [str(x) for x in wanted]}, ip_address=request.client.host if request.client else None)
+    await db.commit()
+    return await list_customer_assignments(customer.id, db, user)
+

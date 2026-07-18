@@ -1,63 +1,42 @@
-# Loyalyn 5.1.0 Release Notes
+# Loyalyn 6.0.0 Release Notes
 
-## One Wallet card, multiple stamp programs
+## Focused single-brand interface
 
-- Added reusable card templates per brand.
-- A single customer card can contain Coffee, Sweet, Breakfast and other independent stamp programs.
-- Added Coffee-only, Coffee + Sweet, VIP and any custom card combination through the same editor.
-- Existing brands receive a compatible default published template automatically.
+- Replaced the broad multi-brand control interface with a focused stamp-card studio for the brand attached to the account.
+- Reduced the primary navigation to Studio, Customers, Fast Scan, Operations and Settings.
+- Preserved historical database records and server-side tenant/permission protections for safe upgrades.
 
-## Full card-template management
+## One-screen card production
 
-- Create, edit, reorder, duplicate, publish, unpublish, archive, restore and safe-delete templates.
-- Draft edits are isolated from customers until publication.
-- Publishing updates the customer-facing representation and active Wallet records.
-- Template artwork supports logo, hero, strip and full-background assets.
+- Card list, live preview, design fields, images, stamp programs and publish controls now live in one workspace.
+- Added undo/redo for unsaved card edits.
+- Added independent card duplication, publishing and archiving.
+- Any number of Coffee-only, Sweet-only, Coffee + Sweet or custom cards can remain published together.
 
-## Stamp-program lifecycle
+## Exact stamp customization
 
-- Create and edit arbitrary program labels, targets, rewards, colors and artwork.
-- Archive, restore and safely delete unused programs.
-- Programs already referenced by historical operations are protected from destructive deletion.
-- Template ordering controls the order shown to staff and customers.
+- Added `display_options` to every stamp program.
+- Added filled and empty stamp artwork uploads.
+- Added icon library, size, gap, X/Y offset, contain/cover and slot-shape controls.
+- Added a deterministic server-side Wallet strip renderer at 1x and 2x sizes.
+- Oversized or non-square artwork is contained inside fixed stamp slots instead of changing the row position.
 
-## Customer assignment and registration
+## Several cards per customer
 
-- Added one active main-card assignment per customer and brand.
-- Managers can change a customer's card template without duplicating the account.
-- Public registration lets the customer choose from published cards enabled for public join.
-- Stable membership QR and Apple Wallet readiness remain separate and explicit.
+- Replaced the one-card-per-customer constraint with a unique `(customer, card template)` assignment.
+- A customer can have no card, one card or several active cards.
+- Added attach, detach, replace-list and list-assignment APIs.
+- Added one distinct Wallet pass per `(customer, card template)` pair.
+- Customer dialog can issue/open a card and copy its share link.
 
-## Fast Scan and reversal
+## Registration flow
 
-- Fast Scan displays only programs included in the customer's assigned card.
-- Added auditable reversal of an accidental stamp/redeem operation.
-- Reversal restores exact prior values, retains the original record and creates a compensating transaction.
-- Duplicate, unauthorized and cross-template operations are blocked server-side.
+- The simplified public page registers the customer first without forcing a card selection.
+- The manager chooses the card or cards afterward and sends the corresponding Wallet links.
+- Legacy clients that explicitly request a card retain the direct self-service issue path.
 
-## Compatibility and migrations
+## Migration
 
-- Added Alembic revision `0004_card_templates`.
-- Migration is idempotent for old bootstrapped schemas and normal PostgreSQL upgrades.
-- Existing customers, balances, brand profiles, Wallet designs, employees, permissions and audit history are preserved.
-- The deployment preflight retains the Alembic revision-column widening fix.
-
-## Frontend and mobile
-
-- Added a dedicated Cards section and a separate Stamp Programs section.
-- Updated Wallet Studio to preview and issue published templates.
-- Updated public join and customer card pages for multi-program cards.
-- Added responsive template editors, ordered program picker, operation history and mobile quick navigation.
-
-## 5.1.0 — Advanced card and stamp studio
-
-- Added a full stamp icon library covering coffee, drinks, desserts, food and general symbols.
-- Added custom empty/filled stamp images with replace and delete controls.
-- Added stamp display modes: icons + count, icons only, count only and progress bar.
-- Added circle, rounded, square, diamond and frameless stamp shapes.
-- Added per-program operational controls: multiple stamps, maximum per action, daily customer limit, active dates and carry-over.
-- Added stamp program duplication and reordering.
-- Expanded card design presets, gradients, image fit/position, corner styles, QR/member/reward visibility and front-program count.
-- Added safe image removal for card logos, hero images, backgrounds and Apple strip images.
-- Fast Scan now exposes +1, +2 and +3 buttons only when permitted by the selected program.
-- Added migration `0005_stamp_customization`; existing cards, programs and customer history are preserved.
+- Added Alembic revision `0005_single_brand_studio`.
+- Existing customers, stamps, transactions, Wallet credentials and old card assignments are preserved.
+- The migration removes the historical single-customer-card uniqueness and adds compound assignment/pass constraints.

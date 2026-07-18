@@ -70,10 +70,10 @@ def program_summary(program: StampProgram) -> dict:
         "stamp_icon": program.stamp_icon,
         "background_color": program.background_color,
         "accent_color": program.accent_color,
-        "settings": dict(program.settings or {}),
-        "card_image_url": program.card_image_url,
-        "empty_stamp_image_url": program.empty_stamp_image_url,
-        "filled_stamp_image_url": program.filled_stamp_image_url,
+        "card_image_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/card" if program.card_image_url else None,
+        "empty_stamp_image_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/empty_stamp" if program.empty_stamp_image_url else None,
+        "filled_stamp_image_url": f"{settings.public_api_url.rstrip('/')}/api/stamps/public/assets/{program.id}/filled_stamp" if program.filled_stamp_image_url else None,
+        "display_options": dict(program.display_options or {}),
         "sort_order": program.sort_order,
         "is_active": program.is_active,
         "is_archived": getattr(program, "is_archived", False),
@@ -316,45 +316,55 @@ async def ensure_default_template(db: AsyncSession, brand: Brand) -> CardTemplat
     return template
 
 
+async def assigned_templates_for_customer(
+    db: AsyncSession,
+    customer: Customer,
+    *,
+    include_draft: bool = False,
+    ensure_fallback: bool = True,
+) -> list[tuple[CustomerCardAssignment, CardTemplate]]:
+    query = (
+        select(CustomerCardAssignment, CardTemplate)
+        .join(CardTemplate, CardTemplate.id == CustomerCardAssignment.card_template_id)
+        .where(
+            CustomerCardAssignment.customer_id == customer.id,
+            CustomerCardAssignment.is_active.is_(True),
+            CardTemplate.brand_id == customer.brand_id,
+            CardTemplate.status != "archived",
+        )
+        .order_by(CardTemplate.sort_order, CardTemplate.created_at)
+    )
+    if not include_draft:
+        query = query.where(CardTemplate.status == "published")
+    rows = list((await db.execute(query)).all())
+    if rows or not ensure_fallback:
+        return rows
+    brand = await db.get(Brand, customer.brand_id)
+    template = await db.scalar(
+        select(CardTemplate)
+        .where(CardTemplate.brand_id == customer.brand_id, CardTemplate.status == "published")
+        .order_by(CardTemplate.is_default.desc(), CardTemplate.sort_order, CardTemplate.created_at)
+    )
+    if not template:
+        template = await ensure_default_template(db, brand)
+    assignment = await attach_template(db, customer, template)
+    return [(assignment, template)]
+
+
 async def active_template_for_customer(
     db: AsyncSession,
     customer: Customer,
 ) -> tuple[CustomerCardAssignment, CardTemplate]:
-    assignment = await db.scalar(
-        select(CustomerCardAssignment).where(CustomerCardAssignment.customer_id == customer.id)
-    )
-    template = await db.get(CardTemplate, assignment.card_template_id) if assignment else None
-    if (
-        not template
-        or template.brand_id != customer.brand_id
-        or template.status != "published"
-    ):
-        brand = await db.get(Brand, customer.brand_id)
-        template = await db.scalar(
-            select(CardTemplate)
-            .where(
-                CardTemplate.brand_id == customer.brand_id,
-                CardTemplate.status == "published",
-            )
-            .order_by(CardTemplate.is_default.desc(), CardTemplate.sort_order, CardTemplate.created_at)
-        )
-        if not template:
-            template = await ensure_default_template(db, brand)
-        if assignment:
-            assignment.card_template_id = template.id
-            assignment.brand_id = customer.brand_id
-        else:
-            assignment = CustomerCardAssignment(
-                brand_id=customer.brand_id,
-                customer_id=customer.id,
-                card_template_id=template.id,
-            )
-            db.add(assignment)
-            await db.flush()
-    return assignment, template
+    """Backward-compatible primary card lookup.
+
+    V6 supports several active cards per customer. Legacy callers still receive
+    the first active published card, ordered by the card studio sort order.
+    """
+    rows = await assigned_templates_for_customer(db, customer)
+    return rows[0]
 
 
-async def assign_template(
+async def attach_template(
     db: AsyncSession,
     customer: Customer,
     template: CardTemplate,
@@ -364,60 +374,113 @@ async def assign_template(
     if template.brand_id != customer.brand_id or template.status == "archived":
         raise ValueError("البطاقة غير متاحة لهذا العميل")
     assignment = await db.scalar(
-        select(CustomerCardAssignment).where(CustomerCardAssignment.customer_id == customer.id)
+        select(CustomerCardAssignment).where(
+            CustomerCardAssignment.customer_id == customer.id,
+            CustomerCardAssignment.card_template_id == template.id,
+        )
     )
     if assignment:
-        assignment.card_template_id = template.id
         assignment.brand_id = customer.brand_id
         assignment.assigned_by_actor_id = actor_id
+        assignment.is_active = True
     else:
         assignment = CustomerCardAssignment(
             brand_id=customer.brand_id,
             customer_id=customer.id,
             card_template_id=template.id,
             assigned_by_actor_id=actor_id,
+            is_active=True,
         )
         db.add(assignment)
         await db.flush()
-    wallet_pass = await db.scalar(
-        select(WalletPass).where(
-            WalletPass.customer_id == customer.id,
-            WalletPass.brand_id == customer.brand_id,
-        )
-    )
-    if wallet_pass:
-        wallet_pass.card_template_id = template.id
-        wallet_pass.update_tag += 1
-    await sync_customer_cards_to_template(db, customer, template)
+    await sync_customer_cards_to_assignments(db, customer)
     return assignment
 
 
-async def sync_customer_cards_to_template(
+async def detach_template(
     db: AsyncSession,
     customer: Customer,
     template: CardTemplate,
+) -> CustomerCardAssignment | None:
+    assignment = await db.scalar(
+        select(CustomerCardAssignment).where(
+            CustomerCardAssignment.customer_id == customer.id,
+            CustomerCardAssignment.card_template_id == template.id,
+        )
+    )
+    if assignment:
+        assignment.is_active = False
+    wallet_pass = await db.scalar(
+        select(WalletPass).where(
+            WalletPass.customer_id == customer.id,
+            WalletPass.card_template_id == template.id,
+            WalletPass.status == "active",
+        )
+    )
+    if wallet_pass:
+        wallet_pass.status = "revoked"
+        wallet_pass.update_tag += 1
+    await sync_customer_cards_to_assignments(db, customer)
+    return assignment
+
+
+async def assign_template(
+    db: AsyncSession,
+    customer: Customer,
+    template: CardTemplate,
+    *,
+    actor_id: uuid.UUID | None = None,
+) -> CustomerCardAssignment:
+    """Legacy single-card operation used by older clients.
+
+    The new studio uses attach_template and lets several cards stay active.
+    This method intentionally keeps the historical replace behavior.
+    """
+    rows = list((await db.scalars(
+        select(CustomerCardAssignment).where(CustomerCardAssignment.customer_id == customer.id)
+    )).all())
+    for row in rows:
+        row.is_active = row.card_template_id == template.id
+    assignment = await attach_template(db, customer, template, actor_id=actor_id)
+    for wallet_pass in (await db.scalars(
+        select(WalletPass).where(WalletPass.customer_id == customer.id, WalletPass.status == "active")
+    )).all():
+        if wallet_pass.card_template_id != template.id:
+            wallet_pass.status = "revoked"
+            wallet_pass.update_tag += 1
+    return assignment
+
+
+async def sync_customer_cards_to_assignments(
+    db: AsyncSession,
+    customer: Customer,
 ) -> list[tuple[CustomerStampCard, StampProgram]]:
-    program_rows = await template_program_rows(
-        db,
-        template.id,
-        active_only=True,
-        published=template.status == "published",
+    assigned = await assigned_templates_for_customer(
+        db, customer, include_draft=True, ensure_fallback=False
     )
-    allowed_ids = {program.id for _, program in program_rows}
-    existing_rows = list(
-        (
-            await db.scalars(
-                select(CustomerStampCard).where(CustomerStampCard.customer_id == customer.id)
-            )
-        ).all()
-    )
+    ordered_programs: list[StampProgram] = []
+    seen: set[uuid.UUID] = set()
+    for _, template in assigned:
+        rows = await template_program_rows(
+            db,
+            template.id,
+            active_only=True,
+            published=template.status == "published",
+        )
+        for _, program in rows:
+            if program.id not in seen:
+                seen.add(program.id)
+                ordered_programs.append(program)
+    existing_rows = list((await db.scalars(
+        select(CustomerStampCard).where(CustomerStampCard.customer_id == customer.id)
+    )).all())
     existing = {row.stamp_program_id: row for row in existing_rows}
+    for card in existing_rows:
+        card.is_active = card.stamp_program_id in seen
     had_any = bool(existing)
     default_consumed = False
     result: list[tuple[CustomerStampCard, StampProgram]] = []
-    for card in existing_rows:
-        card.is_active = card.stamp_program_id in allowed_ids
-    for _, program in program_rows:
+    for program in ordered_programs:
         card = existing.get(program.id)
         if not card:
             migrate_legacy = not had_any and not default_consumed
@@ -432,6 +495,7 @@ async def sync_customer_cards_to_template(
             )
             db.add(card)
             await db.flush()
+            existing[program.id] = card
             if migrate_legacy:
                 default_consumed = True
         else:
@@ -440,10 +504,38 @@ async def sync_customer_cards_to_template(
     return result
 
 
+async def sync_customer_cards_to_template(
+    db: AsyncSession,
+    customer: Customer,
+    template: CardTemplate,
+) -> list[tuple[CustomerStampCard, StampProgram]]:
+    await sync_customer_cards_to_assignments(db, customer)
+    program_rows = await template_program_rows(
+        db,
+        template.id,
+        active_only=True,
+        published=template.status == "published",
+    )
+    program_ids = [program.id for _, program in program_rows]
+    if not program_ids:
+        return []
+    cards = list((await db.scalars(
+        select(CustomerStampCard).where(
+            CustomerStampCard.customer_id == customer.id,
+            CustomerStampCard.stamp_program_id.in_(program_ids),
+        )
+    )).all())
+    by_program = {card.stamp_program_id: card for card in cards}
+    return [(by_program[program.id], program) for _, program in program_rows if program.id in by_program]
+
+
 async def customer_template_cards(
     db: AsyncSession,
     customer: Customer,
+    template: CardTemplate | None = None,
 ) -> tuple[CardTemplate, list[tuple[CustomerStampCard, StampProgram]]]:
-    _, template = await active_template_for_customer(db, customer)
+    if template is None:
+        _, template = await active_template_for_customer(db, customer)
     rows = await sync_customer_cards_to_template(db, customer, template)
     return template, rows
+
